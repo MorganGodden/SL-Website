@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.app.json",
+  "exclude": [],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "generated-sdk/**/*.ts" // Add this line
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.vitest.tsbuildinfo",
+
+    "lib": [],
+    "types": ["node", "jsdom", "vite/client"]
+  }
+}
