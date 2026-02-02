@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { computed, ref } from 'vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
@@ -10,36 +11,30 @@ import { getHeadUrl } from '@/helpers/avatarHelper'
 import { useDialog } from 'primevue/usedialog'
 import PlayerComponent from './playerComponent.vue'
 import ServerInfo from './serverInfoComponent.vue'
-import { ref } from 'vue'
+import type { LeaderboardRow } from '@/common/interfaces'
+import { getMedalEmoji } from '@/common/utilities'
 
 const dataStore = useDataStore()
 const dialog = useDialog()
 
 const searchTerm = ref('')
+const tableData = computed(() =>
+  dataStore.leaderboardData.filter((entry) => {
+    const username = entry.playerData.data.player?.username?.toLowerCase() || ''
+    return username.includes(searchTerm.value.toLowerCase())
+  })
+)
 
-const fakeData = [
-  { rank: 1, name: 'SnowMonarch', points: 97, uuid: 'fa949f11-b74a-4243-8391-1515ace975e7' },
-  { rank: 2, name: 'Jane Doe', points: 93, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 3, name: 'John Smith', points: 85, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 4, name: 'Jane Smith', points: 78, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 5, name: 'John Johnson', points: 74, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 6, name: 'Jane Johnson', points: 69, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 7, name: 'John Brown', points: 65, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 8, name: 'Jane Brown', points: 61, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 9, name: 'John White', points: 57, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' },
-  { rank: 10, name: 'Jane White', points: 53, uuid: 'c5ef3347-4593-4f39-8bb1-2eaa40dd986e' }
-]
+;(async () => await dataStore.fetchLeaderboard())()
 
-const tableData = ref(fakeData)
-
-function showPlayer(name: string, uuid: string) {
+function showPlayer(leaderboardRow: LeaderboardRow) {
   dialog.open(PlayerComponent, {
     props: {
-      header: 'Player Profile / ' + name,
+      header: 'Player Profile',
       modal: true
     },
     data: {
-      uuid
+      leaderboardRow
     }
   })
 }
@@ -52,22 +47,11 @@ function showServerInfo() {
     }
   })
 }
-
-function searchData() {
-  if (searchTerm.value === '') {
-    tableData.value = fakeData
-    return
-  }
-
-  tableData.value = fakeData.filter((data) => {
-    return data.name.toLowerCase().includes(searchTerm.value.toLowerCase())
-  })
-}
 </script>
 
 <template>
-  <div class="my-4 min-h-[300px] rounded-lg overflow-hidden drop-shadow-sm">
-    <DataTable class="" :value="tableData">
+  <div class="mt-2 min-h-[300px] rounded-lg overflow-hidden drop-shadow">
+    <DataTable :value="tableData">
       <!-- EMPTY -->
       <template #empty>
         <div class="flex align-middle items-center justify-center min-h-32 text-gray-400">
@@ -85,18 +69,14 @@ function searchData() {
       <!-- HEADER -->
       <template #header>
         <div class="flex justify-between items-center">
-          <h2 class="text-lg font-semibold">Leaderboard</h2>
-          <div class="flex items-center space-x-2">
-            <IconField>
+          <h2 class="text-lg font-semibold">Season Zero - Leaderboard</h2>
+          <div class="flex items-center gap-2">
+            <IconField class="-mr-1">
               <InputIcon class="absolute pi pi-search" />
-              <InputText
-                v-model="searchTerm"
-                placeholder="Player search..."
-                size="small"
-                @input="searchData"
-              />
+              <InputText v-model="searchTerm" placeholder="Search player..." size="small" />
             </IconField>
             <Button
+              v-if="!dataStore.usingTempStaticData"
               v-tooltip="'Server info'"
               icon="pi pi-info-circle"
               text
@@ -105,23 +85,38 @@ function searchData() {
           </div>
         </div>
       </template>
-      <Column field="rank" header="Rank" sortable></Column>
-      <Column field="name" header="Name">
-        <template #body="slotProps">
+
+      <Column field="position" header="Rank" class="w-4">
+        <template #body="{ data }: { data: LeaderboardRow }">
+          <div class="flex items-center justify-center w-full">
+            {{ getMedalEmoji(data.position) ?? data.position }}
+          </div>
+        </template>
+      </Column>
+
+      <Column field="uuid" header="Name">
+        <template #body="{ data }: { data: LeaderboardRow }">
           <Button
-            class="flex align-middle"
+            pt:root="flex gap-2.5 items-center align-middle h-8 px-2 py-1 hover:drop-shadow-md"
             text
-            @click="showPlayer(slotProps.data.name, slotProps.data.uuid)"
+            @click="showPlayer(data)"
           >
-            <img class="w-5 h-5 my-auto" :src="getHeadUrl(slotProps.data.uuid)" alt="avatar" />
-            <p class="ml-2 font-semibold">{{ slotProps.data.name }}</p>
+            <img class="w-5 h-5 my-auto" :src="getHeadUrl(data.uuid)" alt="avatar" />
+            <p class="font-semibold">
+              {{ data.playerData.data.player?.username }}
+            </p>
           </Button>
         </template>
       </Column>
-      <Column field="points" header="Points"></Column>
+      <Column field="score" header="Score" class="w-4">
+        <template #body="{ data }: { data: LeaderboardRow }">
+          <p class="w-full text-right font-semibold">{{ data.score.toLocaleString() }}</p>
+        </template>
+      </Column>
 
       <!-- FOOTER -->
-      <template #footer>
+      <!-- TODO: Re-enable footer when data is not static -->
+      <template v-if="false" #footer>
         <div class="text-center text-nowrap text-gray-400">
           <p v-if="dataStore.fetchingData">
             <i class="pi pi-spinner text-sm mr-1 animate-spin" />

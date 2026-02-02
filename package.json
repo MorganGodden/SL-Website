@@ -17,6 +17,7 @@
     "@vueuse/core": "^11.0.3",
     "axios": "^1.7.5",
     "chart.js": "^4.4.4",
+    "papaparse": "^5.5.3",
     "pinia": "^2.2.2",
     "primeicons": "^7.0.0",
     "primevue": "^4.2.5",

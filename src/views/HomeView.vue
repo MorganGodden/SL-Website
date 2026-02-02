@@ -10,7 +10,16 @@ const dataStore = useDataStore()
 </script>
 
 <template>
-  <ProgressSpinner v-if="!dataStore.serverData" />
+  <span v-if="false" class="flex flex-col items-center gap-6 drop-shadow-lg">
+    <ProgressSpinner stroke-width="8" />
+    <h1 class="font-bold text-lg w-[70%] text-center text-balance">
+      {{
+        dataStore.connectionRefused
+          ? `Server not found, retrying in ${dataStore.dataFetchInterval - dataStore.secondsSinceLastServerDataFetch} seconds.`
+          : 'Loading...'
+      }}
+    </h1>
+  </span>
   <div v-else class="container">
     <HeaderComponent />
     <LeaderboardComponent />

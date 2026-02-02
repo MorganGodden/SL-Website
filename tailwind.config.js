@@ -9,5 +9,23 @@ export default {
     './node_modules/primevue/**/*.{vue,js,ts,jsx,tsx}'
   ],
   plugins: [require('tailwindcss-primeui')],
-  darkMode: ['selector', '[class*="app-dark"]']
+  darkMode: ['selector', '[class*="app-dark"]'],
+  theme: {
+    extend: {
+      colors: {
+        primary: '#0066FF',
+        'primary-50': '#E5F0FF',
+        'primary-100': '#CCE0FF',
+        'primary-200': '#99C2FF',
+        'primary-300': '#66A3FF',
+        'primary-400': '#3385FF',
+        'primary-500': '#0066FF',
+        'primary-600': '#0052CC',
+        'primary-700': '#003D99',
+        'primary-800': '#002966',
+        'primary-900': '#001433',
+        'primary-950': '#000E24'
+      }
+    }
+  }
 }
