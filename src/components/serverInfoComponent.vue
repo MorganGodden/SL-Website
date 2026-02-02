@@ -1,21 +1,21 @@
-<script setup lang="js">
+<script setup lang="ts">
 import { useDataStore } from '@/stores/dataStore'
 import { computed } from 'vue'
 
 const dataStore = useDataStore()
 
-function numberToGB(number) {
-  return (number / 1024 / 1024 / 1024).toFixed(2)
-}
-const totalMemoryGB = computed(() => numberToGB(dataStore.serverData.health.totalMemory))
-const usedMemeoryGB = computed(() =>
-  numberToGB(dataStore.serverData.health.totalMemory - dataStore.serverData.health.freeMemory)
-)
+// function numberToGB(number: number): string {
+//   return (number / 1024 / 1024 / 1024).toFixed(2)
+// }
+// const totalMemoryGB = computed(() => numberToGB(dataStore.serverData.health.totalMemory))
+// const usedMemeoryGB = computed(() =>
+//   numberToGB(dataStore.serverData.health.totalMemory - dataStore.serverData.health.freeMemory)
+// )
 </script>
 
 <template>
   <div class="grid grid-cols-2 gap-1">
-    <b>Players:</b>
+    <!-- <b>Players:</b>
     <p>{{ dataStore.serverData.onlinePlayers }} / {{ dataStore.serverData.maxPlayers }}</p>
     <b>TPS:</b>
     <p>{{ dataStore.serverData.tps }}</p>
@@ -26,6 +26,6 @@ const usedMemeoryGB = computed(() =>
     <b>IP Address:</b>
     <a class="w-fit cursor-pointer" ref="#" @click="dataStore.copyServerIp">{{
       dataStore.serverIp
-    }}</a>
+    }}</a> -->
   </div>
 </template>

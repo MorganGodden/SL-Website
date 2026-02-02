@@ -42,7 +42,7 @@ const onImageLoad = () => {
     </div>
 
     <!-- Content Section -->
-    <div class="flex flex-col flex-grow gap-4 justify-between w-[300px]">
+    <div class="flex flex-col flex-grow gap-4 justify-between w-fit sm:w-[300px]">
       <!-- Overall Score Section -->
       <div
         class="bg-gradient-to-b from-blue-400 to-blue-500 rounded-lg p-4 text-white drop-shadow-md"
@@ -53,14 +53,17 @@ const onImageLoad = () => {
 
       <!-- Stats Section -->
       <div class="space-y-2 flex-grow">
-        <div v-if="player.username" class="flex gap-2 items-center justify-between">
+        <div
+          v-if="player.username"
+          class="flex justify-between flex-col items-start sm:flex-row sm:items-center sm:gap-2"
+        >
           <span class="text-gray-600 font-medium">Username:</span>
           <span class="text-lg font-semibold">{{ player.username }}</span>
         </div>
 
-        <div class="flex gap-2 items-center justify-between">
+        <div class="flex justify-between flex-col items-start sm:flex-row sm:items-center sm:gap-2">
           <span class="text-gray-600 font-medium">Leaderboard Position:</span>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 text-nowrap">
             <span v-if="getMedalEmoji(leaderboardRow.position)" class="text-2xl">
               {{ getMedalEmoji(leaderboardRow.position) }}
             </span>

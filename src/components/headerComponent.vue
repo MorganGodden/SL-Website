@@ -16,7 +16,7 @@ function stripColorCodes(text: string): string {
 }
 
 const motd = computed(() =>
-  stripColorCodes(dataStore.serverData?.motd ?? 'Welcome, to the Snow Leages!')
+  stripColorCodes(/*dataStore.serverData?.motd ??*/ 'Welcome, to the Snow Leagues!')
 )
 </script>
 

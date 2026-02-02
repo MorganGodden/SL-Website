@@ -1,19 +1,19 @@
-<script setup>
+<script setup lang="ts">
 import Button from 'primevue/button'
 import { ref, watchEffect, onErrorCaptured } from 'vue'
 
 // Define props to accept a key to reset the component
-const props = defineProps({
-  resetKey: [String, Number]
-})
+const props = defineProps<{
+  resetKey?: string | number
+}>()
 
-const error = ref(null)
+const error = ref<Error | null>(null)
 
 function resetError() {
   error.value = null
 }
 
-function handleError(err) {
+function handleError(err: Error) {
   error.value = err
 }
 

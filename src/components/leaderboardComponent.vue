@@ -51,7 +51,7 @@ function showServerInfo() {
 
 <template>
   <div class="mt-2 min-h-[300px] rounded-lg overflow-hidden drop-shadow">
-    <DataTable :value="tableData">
+    <DataTable :value="tableData" paginator :rows="10" :always-show-paginator="false">
       <!-- EMPTY -->
       <template #empty>
         <div class="flex align-middle items-center justify-center min-h-32 text-gray-400">
@@ -68,12 +68,17 @@ function showServerInfo() {
 
       <!-- HEADER -->
       <template #header>
-        <div class="flex justify-between items-center">
-          <h2 class="text-lg font-semibold">Season Zero - Leaderboard</h2>
-          <div class="flex items-center gap-2">
-            <IconField class="-mr-1">
+        <div class="flex gap-1 justify-between flex-col items-start sm:flex-row sm:items-center">
+          <h2 class="text-lg font-semibold text-pretty">Season Zero - Leaderboard</h2>
+          <div class="flex items-center gap-2 w-full sm:w-fit">
+            <IconField class="-mr-1 w-full">
               <InputIcon class="absolute pi pi-search" />
-              <InputText v-model="searchTerm" placeholder="Search player..." size="small" />
+              <InputText
+                v-model="searchTerm"
+                placeholder="Search player..."
+                size="small"
+                pt:root="w-full"
+              />
             </IconField>
             <Button
               v-if="!dataStore.usingTempStaticData"
