@@ -13,6 +13,5 @@ import ErrorBoundary from './components/errorBoundary.vue'
 </template>
 
 <style scoped>
-@import './styles/index.css';
-@import './styles/global.css';
+@import './assets/primevue.css';
 </style>

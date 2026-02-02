@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { getBodyUrl } from '@/helpers/avatarHelper'
+import { getBodyUrl } from '@/helpers/playerHelper'
 import { inject, ref, computed } from 'vue'
 import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'

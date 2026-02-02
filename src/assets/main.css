@@ -1,6 +1,9 @@
 @import './base.css';
 
 body {
+  box-shadow:
+    inset 20px 20px 60px #c8c8cc,
+    inset -20px -20px 60px #ffffff;
   background-color: whitesmoke !important;
 }
 

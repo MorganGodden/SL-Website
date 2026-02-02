@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 // import * as SwaggerSDK from '@/../generated-sdk'
 // import axios from 'axios'
 import Papa from 'papaparse'
-import { getPlayer } from '@/helpers/avatarHelper'
+import { getPlayer } from '@/helpers/playerHelper'
 import type { CsvRow, LeaderboardRow } from '@/common/interfaces'
 
 export const useDataStore = defineStore('dataStore', () => {
