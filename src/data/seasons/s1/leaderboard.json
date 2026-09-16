@@ -1,0 +1,115 @@
+{
+  "seasonId": "s1",
+  "final": false,
+  "source": "FIXTURES. Season 1 scoring does not exist in the plugin yet. Scores are provisional placeholders — do not depend on their range, unit or scale.",
+  "players": [
+    {
+      "rank": 1,
+      "playerUuid": "f791610f-58dd-4c52-abfa-ca8be1e4a711",
+      "playerName": "Froste131",
+      "score": 42736
+    },
+    {
+      "rank": 2,
+      "playerUuid": "483f5ec5-0f5c-47e8-b768-11d0403066fb",
+      "playerName": "RikkunFops",
+      "score": 26609
+    },
+    {
+      "rank": 3,
+      "playerUuid": "acccbb5b-8606-41c8-a826-38e3cc77af35",
+      "playerName": "Dunlin44",
+      "score": 13787
+    },
+    {
+      "rank": 4,
+      "playerUuid": "66934d0d-0d1e-40b4-a923-267ed6132864",
+      "playerName": "ferrous_owl",
+      "score": 12543
+    },
+    {
+      "rank": 5,
+      "playerUuid": "04bf0b00-4320-4544-a054-82be131654d2",
+      "playerName": "_bjong",
+      "score": 10519
+    },
+    {
+      "rank": 6,
+      "playerUuid": "813d537e-6ac1-4e05-b2da-f98f14d94862",
+      "playerName": "mossyrook",
+      "score": 10202
+    },
+    {
+      "rank": 7,
+      "playerUuid": "6306a597-6575-411b-95aa-e8bd5c514ef2",
+      "playerName": "GlacierPike",
+      "score": 9797
+    },
+    {
+      "rank": 8,
+      "playerUuid": "9c0207b3-9334-4a63-89e6-07f55de82140",
+      "playerName": "Hodgeheg798",
+      "score": 9122
+    },
+    {
+      "rank": 9,
+      "playerUuid": "bfd6fb76-5762-4ff8-8be3-aa177768970b",
+      "playerName": "novaquill",
+      "score": 5474
+    },
+    {
+      "rank": 10,
+      "playerUuid": "721f1922-e6d5-46d2-8a15-7023d5329eb9",
+      "playerName": "ANxtty",
+      "score": 4746
+    },
+    {
+      "rank": 11,
+      "playerUuid": "3031b682-ee08-482f-93ce-1477cb3d8588",
+      "playerName": "crispweather",
+      "score": 4496
+    },
+    {
+      "rank": 12,
+      "playerUuid": "bc1bbd45-2965-446f-96f4-952556f3db32",
+      "playerName": "Tundra_Ott",
+      "score": 4125
+    },
+    {
+      "rank": 13,
+      "playerUuid": "69a40f0b-4087-4925-a744-d104455754d8",
+      "playerName": "kestrel_ix",
+      "score": 2903
+    },
+    {
+      "rank": 14,
+      "playerUuid": "0c6783fe-e180-4355-a5ad-f309de7cac7e",
+      "playerName": "Halvard_S",
+      "score": 2061
+    },
+    {
+      "rank": 15,
+      "playerUuid": "5ea877a7-7251-48fd-823f-61521c9b069e",
+      "playerName": "Pinewold",
+      "score": 1659
+    },
+    {
+      "rank": 16,
+      "playerUuid": "669ef81b-9643-4e9e-8fad-01f2927c313e",
+      "playerName": "Samboy230",
+      "score": 1648
+    },
+    {
+      "rank": 17,
+      "playerUuid": "87ac90ea-a32a-44cb-87cf-8928e3f716b0",
+      "playerName": "yrm8",
+      "score": 254
+    },
+    {
+      "rank": 18,
+      "playerUuid": "25b3954b-6680-433d-98bc-d26bf87a45d8",
+      "playerName": "BrambleJam",
+      "score": 181
+    }
+  ]
+}

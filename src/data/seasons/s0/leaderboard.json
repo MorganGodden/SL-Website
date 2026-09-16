@@ -1,0 +1,50 @@
+{
+  "seasonId": "s0",
+  "final": true,
+  "frozenAt": "2026-09-10T22:40:30.424Z",
+  "source": "public/leaderboard.csv + playerdb.co, snapshotted once. Season 0 is finished; do not refetch.",
+  "players": [
+    {
+      "rank": 1,
+      "playerUuid": "04bf0b00-4320-4544-a054-82be131654d2",
+      "playerName": "_bjong",
+      "score": 125000
+    },
+    {
+      "rank": 2,
+      "playerUuid": "f791610f-58dd-4c52-abfa-ca8be1e4a711",
+      "playerName": "Froste131",
+      "score": 81447
+    },
+    {
+      "rank": 3,
+      "playerUuid": "87ac90ea-a32a-44cb-87cf-8928e3f716b0",
+      "playerName": "yrm8",
+      "score": 71991
+    },
+    {
+      "rank": 4,
+      "playerUuid": "721f1922-e6d5-46d2-8a15-7023d5329eb9",
+      "playerName": "ANxtty",
+      "score": 36292
+    },
+    {
+      "rank": 5,
+      "playerUuid": "669ef81b-9643-4e9e-8fad-01f2927c313e",
+      "playerName": "Samboy230",
+      "score": 27583
+    },
+    {
+      "rank": 6,
+      "playerUuid": "483f5ec5-0f5c-47e8-b768-11d0403066fb",
+      "playerName": "RikkunFops",
+      "score": 20446
+    },
+    {
+      "rank": 7,
+      "playerUuid": "9c0207b3-9334-4a63-89e6-07f55de82140",
+      "playerName": "Hodgeheg798",
+      "score": 5557
+    }
+  ]
+}

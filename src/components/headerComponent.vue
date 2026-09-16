@@ -1,23 +1,16 @@
 <script lang="ts" setup>
 import Image from 'primevue/image'
-import Button from 'primevue/button'
 import Logo from '../assets/images/logo.avif'
-import { useDataStore } from '@/stores/dataStore'
-import { computed } from 'vue'
+import { SEASONS, type SeasonId } from '@/seasons/registry'
 
-const dataStore = useDataStore()
+defineProps<{
+  /** Which season is being viewed; used to mark the active nav link. */
+  seasonId: SeasonId
+  /** Line shown under the logo. Season 0 keeps the original welcome message. */
+  tagline: string
+}>()
 
-function stripColorCodes(text: string): string {
-  // Remove RGB color codes (§x§R§R§G§G§B§B)
-  let stripped = text.replace(/§x(§[0-9a-f]){6}/gi, '')
-  // Remove formatting codes (§l, §n, etc.)
-  stripped = stripped.replace(/§[0-9a-fk-or]/gi, '')
-  return stripped
-}
-
-const motd = computed(() =>
-  stripColorCodes(/*dataStore.serverData?.motd ??*/ 'Welcome, to the Snow Leagues!')
-)
+const seasons = SEASONS
 </script>
 
 <template>
@@ -25,14 +18,22 @@ const motd = computed(() =>
     <Image :src="Logo" alt="Logo" class="drop-shadow-lg px-8" />
     <hr class="w-full mt-4 mb-2 text-lightgray" />
     <div class="flex flex-row w-full gap-2 align-middle items-center justify-between h-10">
-      <p class="h-fit ml-3 font-semibold opacity-50">{{ motd }}</p>
-      <Button
-        v-if="!dataStore.usingTempStaticData"
-        label="Join Now!"
-        class="font-bold hover:animate-pulse"
-        text
-        @click="dataStore.copyServerIp"
-      />
+      <p class="h-fit ml-3 font-semibold opacity-50">{{ tagline }}</p>
+      <nav class="flex items-center gap-1 mr-1">
+        <RouterLink
+          v-for="season in seasons"
+          :key="season.id"
+          :to="season.route"
+          class="px-2.5 py-1 rounded text-sm font-semibold transition-colors"
+          :class="
+            season.id === seasonId
+              ? 'bg-primary-100 text-primary-700'
+              : 'opacity-50 hover:opacity-100'
+          "
+        >
+          {{ season.shortName }}
+        </RouterLink>
+      </nav>
     </div>
   </header>
 </template>
