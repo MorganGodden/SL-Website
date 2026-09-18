@@ -8,7 +8,7 @@
  */
 
 /** Blocks of floor between one plot and the next, in both directions. */
-export const PLOT_GAP = 4
+export const PLOT_GAP = 2
 
 /**
  * Direction of the automatic drift in world space.

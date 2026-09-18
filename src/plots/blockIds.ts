@@ -67,6 +67,12 @@ export function resolveBlockId(baseId: string, has: (id: string) => boolean): st
   const block = `${material}_block`
   if (has(block)) return block
 
+  // `stone_brick_stairs` -> `stone_brick` -> `stone_bricks`. Every brick family
+  // in the game is named in the plural as a block and the singular as a shape,
+  // so without this none of them find their own texture.
+  const plural = `${material}s`
+  if (has(plural)) return plural
+
   return null
 }
 

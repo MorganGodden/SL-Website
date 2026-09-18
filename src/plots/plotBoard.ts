@@ -82,6 +82,16 @@ export class PlotBoard {
     void this.poll()
   }
 
+  /**
+   * Re-meshes one column cut off at `ceiling` layers.
+   *
+   * The blocks are already in the decode worker, so this is a mesh and nothing
+   * else: no fetch, and no decode.
+   */
+  slice(playerUuid: string, ceiling: number, from?: number): Promise<DecodeSuccess> {
+    return this.decoder.slice(playerUuid, ceiling, from)
+  }
+
   /** Stops polling and releases the worker. Safe to call more than once. */
   stop(): void {
     this.stopped = true
@@ -143,6 +153,7 @@ export class PlotBoard {
     for (const uuid of [...this.known.keys()]) {
       if (!present.has(uuid)) {
         this.known.delete(uuid)
+        this.decoder.forget(uuid)
         this.callbacks.onRemoved(uuid)
       }
     }
@@ -172,6 +183,7 @@ export class PlotBoard {
       if (result.status === 'missing') {
         // 404 means this player has not published a snapshot yet. Normal.
         if (this.known.delete(entry.playerUuid)) {
+          this.decoder.forget(entry.playerUuid)
           this.callbacks.onRemoved(entry.playerUuid)
         }
         return

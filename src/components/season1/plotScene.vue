@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import Slider from 'primevue/slider'
 import { PlotRenderer, type RenderSlot } from '@/plots/plotRenderer'
 import { PlotBoard, type BoardStatus } from '@/plots/plotBoard'
 import { plotsConfigured } from '@/plots/plotsClient'
-import { PLOT_GAP, SCROLL_DIRECTION, layoutGrid, screenDeltaToWorld } from '@/plots/boardLayout'
+import {
+  PLOT_GAP,
+  SCROLL_DIRECTION,
+  layoutGrid,
+  pickStride,
+  screenDeltaToWorld
+} from '@/plots/boardLayout'
 import type { DecodeSuccess } from '@/plots/decode.worker'
 import type { LeaderboardEntry } from '@/common/interfaces'
 import { getMedalEmoji } from '@/common/utilities'
@@ -11,9 +18,33 @@ import { getMedalEmoji } from '@/common/utilities'
 const props = defineProps<{
   /** Leaderboard rows, joined to columns on playerUuid. */
   rows: LeaderboardEntry[]
+  /**
+   * Whether something is covering the board.
+   *
+   * A covered board is still a board - it goes on drifting behind whatever is
+   * over it - but it stops answering the pointer: nothing hovers, nothing is
+   * dragged and nothing is picked up. A click on it asks for the cover to go.
+   */
+  covered?: boolean
 }>()
 
-const emit = defineEmits<{ status: [BoardStatus] }>()
+const emit = defineEmits<{
+  status: [BoardStatus]
+  /** A plot has taken the stage, or has just been let go of. */
+  focused: [boolean]
+  /** The board was clicked while something was covering it. */
+  dismiss: []
+  /** Escape was pressed and the board had no use for it. */
+  escape: []
+  /** Which players the board is actually drawing a plot for. */
+  plots: [string[]]
+}>()
+
+/**
+ * Picking a plot is not only the board's to do: the leaderboard over it names
+ * the same players, and a row there is a way of pointing at a plot.
+ */
+defineExpose({ focusPlayer })
 
 /**
  * World units per second of automatic scrolling. A plot is twenty units across,
@@ -23,6 +54,13 @@ const emit = defineEmits<{ status: [BoardStatus] }>()
 const SCROLL_SPEED = 1.3
 /** How long a manual scrub suspends the automatic scroll. */
 const RESUME_AFTER_MS = 4000
+/**
+ * How far a pointer must travel before a press counts as a drag.
+ *
+ * A press that never moves this far is a poke at the board, and should not be
+ * treated as the visitor asking for room to look around.
+ */
+const DRAG_SLOP_PX = 6
 /**
  * Wheel notches are reported in pixels but are much coarser than a drag, so a
  * notch is deliberately worth less than the distance it claims.
@@ -35,7 +73,59 @@ const WHEEL_SCALE = 0.45
  * The wait runs again for every plot, so a card only ever belongs to a plot the
  * pointer actually settled on.
  */
-const HOVER_DELAY_MS = 300
+const HOVER_DELAY_MS = 220
+/** How far a hovered plot rises out of its shaft, in blocks. */
+const HOVER_LIFT = 2
+/**
+ * Time constant of that rise. The plot moves most of the way within about two
+ * of these and settles within four, so it reads as a lift rather than a jump
+ * while still keeping up with a pointer sweeping across the board.
+ */
+const LIFT_TAU_MS = 52
+/** Lift below which a plot is treated as back down and stops being animated. */
+const LIFT_EPSILON = 0.01
+/**
+ * Time constant of a plot coming forward when it is clicked, and how close to
+ * the end of that it has to get before it is called done.
+ *
+ * Slower than the hover lift: this one is a change of scene rather than a
+ * flick of feedback, and the board fading out behind it has to keep up.
+ */
+const FOCUS_TAU_MS = 95
+const FOCUS_EPSILON = 0.002
+/**
+ * Radians a focused plot turns per pixel dragged.
+ *
+ * A drag across the width of a phone comes to most of a full turn, which is
+ * enough to get round the back of a build without a second grab.
+ */
+const SPIN_PER_PIXEL = 0.011
+/** Layers one notch of the wheel moves the cut by. */
+const SLICE_PER_NOTCH = 1
+/**
+ * How far the view may be brought in or pushed back, as a factor of the framing
+ * the board picks for itself.
+ *
+ * Deliberately a narrow band: the board is a field of plots at a set size, and
+ * letting it be zoomed far in or far out turns it into either one plot or a
+ * carpet of dots, neither of which is what it is for.
+ */
+const ZOOM_MIN = 0.82
+const ZOOM_MAX = 1.3
+/**
+ * Zoom per pixel of wheel travel, eased so a mouse notch and a trackpad's
+ * gentler stream of events both feel like the same gesture.
+ */
+const ZOOM_PER_PIXEL = 0.0012
+/**
+ * How far the board pulls back while something is covering it, and how quickly.
+ *
+ * Kept apart from the zoom the visitor sets: the two are multiplied, so the
+ * board stands back from whatever is over it without forgetting how far in
+ * they had brought it.
+ */
+const COVERED_ZOOM = 0.9
+const COVER_TAU_MS = 110
 
 /**
  * A drawn copy of a plot, tagged with the lattice cell it sits in.
@@ -54,6 +144,8 @@ interface ColumnRecord {
   plotIndex: number
   occupiedHeight: number
   surfaceLevel: number
+  /** World y of layer 0, so a cut can be named by the height it stands at. */
+  minY: number
 }
 
 /** The one plot under the pointer, and where to put its card. */
@@ -66,9 +158,23 @@ interface Label {
   y: number
 }
 
+/** What the focused plot's own controls need to know about it. */
+interface FocusState {
+  name: string
+  score: string | null
+  /** Layers currently drawn, from 1 to `layers`. */
+  cut: number
+  /** Layers the plot has anything in at all. */
+  layers: number
+  /** World y of the topmost layer still drawn. */
+  worldY: number
+}
+
 const canvas = ref<HTMLCanvasElement | null>(null)
 const message = ref<string | null>('Connecting...')
 const hovered = shallowRef<Label | null>(null)
+/** Non-null while a plot is on the stage, which is what puts its controls up. */
+const focus = shallowRef<FocusState | null>(null)
 
 let renderer: PlotRenderer | null = null
 let board: PlotBoard | null = null
@@ -96,6 +202,49 @@ let pointer: { x: number; y: number } | null = null
 let hoverKey: string | null = null
 /** When the pointer landed on that cell. */
 let hoverSince = 0
+/**
+ * Cells that are part way out of their shafts, hovered or still settling back.
+ *
+ * Only cells actually off the ground are held, and each is dropped again once
+ * it lands, so a cell that scrolls away mid-lift is not left behind here: the
+ * board runs for hours and the lattice coordinates it is keyed by never repeat.
+ */
+const lifts: { key: string; height: number }[] = []
+/** Last frame's drawn copies, so a tap can pick without waiting for a frame. */
+let lastSlots: HoverSlot[] = []
+/**
+ * The cell holding the stage, kept until it has finished going back so that
+ * letting a plot go is animated rather than a cut.
+ */
+let focusKey: string | null = null
+/** 1 while the focused plot is coming forward, 0 while it is going back. */
+let focusTarget = 0
+let focusProgress = 0
+/** How far the focused plot has been spun, in radians. */
+let focusSpin = 0
+/**
+ * How far the view has been zoomed, shared by the board and the plot on it.
+ *
+ * One level rather than one each: the two views are a moment apart, and a plot
+ * that jumped to a different zoom the instant it was picked up would read as
+ * the board having moved rather than as the plot coming forward.
+ */
+let zoom = 1
+/** How far the board has stood back for whatever is covering it, 0 to 1. */
+let coverEase = 0
+/** Pointers currently down, and the span between them while pinching. */
+const contacts = new Map<number, { x: number; y: number }>()
+let pinchSpan = 0
+/**
+ * The cut the focused plot is meshed at, and the one it should be meshed at.
+ *
+ * They differ while a re-mesh is in flight: the cut can be dragged through a
+ * dozen layers in the time one of them is meshed, and only the layer it lands
+ * on is worth drawing. Everything in between is skipped rather than queued.
+ */
+let sliceDrawn = 0
+let sliceWanted = 0
+let slicing = false
 let lastFrameAt = 0
 let manualUntil = 0
 /**
@@ -118,6 +267,9 @@ function recomputeOrder(): void {
     if (rb !== undefined) return 1
     return (columns.get(a)?.plotIndex ?? 0) - (columns.get(b)?.plotIndex ?? 0)
   })
+  // This is the board's answer to "whose plot can be pointed at": the
+  // leaderboard over it lists players the board may have nothing to show for.
+  emit('plots', order)
   needsRender = true
 }
 
@@ -128,8 +280,10 @@ function frame(now: number): void {
   const deltaMs = lastFrameAt === 0 ? 0 : Math.min(now - lastFrameAt, 100)
   lastFrameAt = now
 
-  // The board always repeats, so it always has somewhere to scroll to.
-  const drifting = now > manualUntil
+  // The board always repeats, so it always has somewhere to scroll to. It does
+  // not scroll at all while a plot is being looked at: the rest of the board
+  // has faded out, and the plot on the stage is not going anywhere.
+  const drifting = now > manualUntil && focusKey === null
   if (drifting) {
     // The drift runs along a world axis, which an isometric camera shows as a
     // screen diagonal. Scrubbing is free to leave that axis.
@@ -140,6 +294,11 @@ function frame(now: number): void {
   }
   needsRender = false
 
+  // Blocks that have just been placed or broken are growing in or shrinking
+  // away, which the board has to keep drawing until they have settled.
+  if (renderer.settling) needsRender = true
+
+  applyCover(deltaMs)
   renderer.setScroll(scroll.x, scroll.z)
 
   const cells = layoutGrid(order.length, spacing, scroll.x, scroll.z, renderer.viewExtent)
@@ -158,35 +317,248 @@ function frame(now: number): void {
   }
 
   renderer.syncPlots(renderSlots)
-  updateHover(renderSlots, now)
+  lastSlots = renderSlots
+  // Picking first, then lifting: the pick decides what is hovered, and it has
+  // to test the plots where they rest rather than where the lift has taken
+  // them. The card is placed last of all, so it rides up with its plot.
+  let picked: number | null = null
+  if (props.covered) {
+    // Nothing under a cover is hoverable, and a plot left lit under one would
+    // stay lit for as long as it was there.
+    clearHover()
+  } else if (focusKey === null) {
+    picked = pickHover(renderSlots, now)
+  } else {
+    // Nothing on the board behind the focused plot is hoverable, and the plot
+    // itself is no longer where the ray would look for it.
+    clearHover()
+  }
+
+  applyLifts(renderSlots, deltaMs)
+  applyGlint(renderSlots)
+  applyFocus(renderSlots, deltaMs)
+  showCard(renderSlots, picked, now)
   renderer.renderNow()
 }
 
 /**
- * Names and scores belong to whichever plot the pointer is over.
+ * Eases every lifted cell towards where it belongs and hands the heights to the
+ * renderer.
  *
- * The lattice fills the screen with plots, and a card on every one of them
- * buries the builds they are meant to identify. Picking runs per frame rather
- * than per pointer event because the board moves underneath a still cursor.
+ * Exponential easing rather than a fixed duration: a plot that is caught on the
+ * way down turns around from wherever it had got to, which is what a pointer
+ * sweeping back over a plot it has just left should look like.
  */
-function updateHover(slots: HoverSlot[], now: number): void {
+function applyLifts(slots: HoverSlot[], deltaMs: number): void {
+  if (!renderer) return
+  if (hoverKey !== null && !lifts.some((lift) => lift.key === hoverKey)) {
+    lifts.push({ key: hoverKey, height: 0 })
+  }
+  if (lifts.length === 0) return
+
+  const step = reduceMotion() ? 1 : 1 - Math.exp(-deltaMs / LIFT_TAU_MS)
+
+  for (let i = lifts.length - 1; i >= 0; i--) {
+    const lift = lifts[i]
+    const target = lift.key === hoverKey ? HOVER_LIFT : 0
+    lift.height += (target - lift.height) * step
+
+    if (Math.abs(target - lift.height) < LIFT_EPSILON) {
+      lift.height = target
+      // Down and staying down: nothing left to animate or to raise.
+      if (target === 0) lifts.splice(i, 1)
+    }
+  }
+
+  // A board sitting still only redraws when something has changed. A plot off
+  // the ground is either still moving or is glinting, and both need frames.
+  if (lifts.length > 0) needsRender = true
+
+  for (let i = 0; i < slots.length; i++) {
+    const lift = lifts.find((entry) => entry.key === slots[i].key)
+    if (lift) renderer.setLift(i, lift.height)
+  }
+}
+
+/**
+ * Puts the enchanted glint on the hovered plot, in step with its lift.
+ *
+ * Tying it to the lift rather than to the hover itself means it arrives and
+ * leaves with the plot rather than snapping on under it.
+ */
+function applyGlint(slots: HoverSlot[]): void {
+  if (!renderer) return
+
+  // A plot on the stage has been picked already, and a glint on the board
+  // behind it would only pull the eye back off it.
+  const key = focusKey === null ? hoverKey : null
+  const lift = key === null ? undefined : lifts.find((entry) => entry.key === key)
+  if (!lift) {
+    renderer.setGlint(null, 0)
+    return
+  }
+
+  const index = slots.findIndex((slot) => slot.key === key)
+  renderer.setGlint(index === -1 ? null : index, lift.height / HOVER_LIFT)
+}
+
+/**
+ * Eases the clicked plot to the front of the scene, or back to its cell once it
+ * has been let go.
+ */
+function applyFocus(slots: HoverSlot[], deltaMs: number): void {
+  if (!renderer || (focusKey === null && focusProgress === 0)) return
+
+  const step = reduceMotion() ? 1 : 1 - Math.exp(-deltaMs / FOCUS_TAU_MS)
+  focusProgress += (focusTarget - focusProgress) * step
+
+  if (Math.abs(focusTarget - focusProgress) < FOCUS_EPSILON) {
+    focusProgress = focusTarget
+    // Back in its cell: the stage is free, and the board can drift again.
+    if (focusTarget === 0) focusKey = null
+  } else {
+    needsRender = true
+  }
+
+  const index = focusKey === null ? -1 : slots.findIndex((slot) => slot.key === focusKey)
+  renderer.setFocus(index === -1 ? null : index, focusProgress)
+}
+
+/** Takes the focused plot back to its cell, whole and the way round it was. */
+function releaseFocus(): void {
+  if (focusKey === null || focusTarget === 0) return
+  focusTarget = 0
+  focus.value = null
+  focusSpin = 0
+  sliceWanted = 0
+  renderer?.setFocusSpin(0)
+  renderer?.setFocusColumn(null)
+  needsRender = true
+  // Announced on the way out rather than on landing: whatever moved aside for
+  // the plot can come back while it is still travelling.
+  emit('focused', false)
+}
+
+/**
+ * Cuts the focused plot off after `cut` layers.
+ *
+ * The plot is re-meshed rather than clipped, so that the cut comes back with a
+ * surface on it. That is worker work, and only one is asked for at a time: a
+ * cut dragged through twenty layers meshes the layer it started on, then the
+ * one the visitor has arrived at by the time that comes back.
+ */
+function setSlice(cut: number): void {
+  const column = focusedColumn()
+  if (!column || !focus.value) return
+
+  const clamped = Math.round(Math.min(Math.max(cut, 1), column.occupiedHeight))
+  focus.value = { ...focus.value, cut: clamped, worldY: column.minY + clamped - 1 }
+  sliceWanted = clamped
+  void runSlice()
+}
+
+/** The record for whichever player is on the stage. */
+function focusedColumn(): ColumnRecord | undefined {
+  if (focusKey === null) return undefined
+  const slot = lastSlots.find((entry) => entry.key === focusKey)
+  return slot ? columns.get(slot.uuid) : undefined
+}
+
+async function runSlice(): Promise<void> {
+  if (slicing) return
+  const column = focusedColumn()
+  if (!board || !renderer || !column || sliceWanted === sliceDrawn) return
+
+  slicing = true
+  try {
+    while (sliceWanted !== sliceDrawn && focusKey !== null) {
+      const wanted = sliceWanted
+      // A plot cut at its own height is the plot, so the whole geometry it is
+      // already sharing with the rest of the board is used rather than a
+      // second copy of it.
+      // Even going back to the whole plot goes through the worker, so that the
+      // layers coming back fade in like every other move of the cut, and so
+      // that the next move is compared against what is actually on screen.
+      renderer.setFocusColumn(await board.slice(column.playerUuid, wanted, sliceDrawn))
+      sliceDrawn = wanted
+      needsRender = true
+    }
+  } catch (error) {
+    // A plot can be dropped by the board while its slice is being meshed.
+    console.warn('[plots] slice failed:', error)
+  } finally {
+    slicing = false
+  }
+}
+
+/**
+ * Brings the view in or pushes it back by a factor, within the band the board
+ * allows.
+ */
+function zoomBy(factor: number): void {
+  if (!renderer) return
+  const next = Math.min(Math.max(zoom * factor, ZOOM_MIN), ZOOM_MAX)
+  if (Math.abs(next - zoom) < 0.0005) return
+
+  zoom = next
+  pushZoom()
+  needsRender = true
+}
+
+/** The zoom the visitor set, less however far the board has stood back. */
+function pushZoom(): void {
+  renderer?.setZoom(zoom * (1 - coverEase * (1 - COVERED_ZOOM)))
+}
+
+/**
+ * Eases the board back while something covers it, and forward again when it
+ * goes: a panel arriving over a board that does not move reads as a sticker on
+ * the screen rather than as something in front of it.
+ */
+function applyCover(deltaMs: number): void {
+  const target = props.covered ? 1 : 0
+  if (coverEase === target) return
+
+  const step = reduceMotion() ? 1 : 1 - Math.exp(-deltaMs / COVER_TAU_MS)
+  coverEase += (target - coverEase) * step
+  if (Math.abs(target - coverEase) < 0.002) coverEase = target
+  else needsRender = true
+
+  pushZoom()
+}
+
+/** The span between the two fingers of a pinch. */
+function span(): number {
+  const [first, second] = [...contacts.values()]
+  if (!first || !second) return 0
+  return Math.hypot(first.x - second.x, first.y - second.y)
+}
+
+/** Whether the visitor has asked for less movement. */
+function reduceMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+/**
+ * Finds the plot under the pointer, if any, and returns which drawn copy it is.
+ *
+ * Picking runs per frame rather than per pointer event because the board moves
+ * underneath a still cursor.
+ */
+function pickHover(slots: HoverSlot[], now: number): number | null {
   if (!renderer || !pointer) {
     clearHover()
-    return
+    return null
   }
 
   const index = renderer.pickSlot(pointer.x, pointer.y)
   const slot = index === null ? null : slots[index]
-  const column = slot ? columns.get(slot.uuid) : undefined
-  if (index === null || !slot || !column) {
+  if (index === null || !slot || !columns.has(slot.uuid)) {
     clearHover()
-    return
-  }
-
-  const projected = renderer.projectSlot(index)
-  if (!projected) {
-    clearHover()
-    return
+    return null
   }
 
   // Restarting on the cell rather than on the player: the same player is drawn
@@ -200,10 +572,34 @@ function updateHover(slots: HoverSlot[], now: number): void {
     hovered.value = null
   }
 
+  return index
+}
+
+/**
+ * Names and scores belong to whichever plot the pointer is over.
+ *
+ * The lattice fills the screen with plots, and a card on every one of them
+ * buries the builds they are meant to identify. The plot itself rises straight
+ * away; only the card is held back, so the board still answers the pointer
+ * during the wait.
+ */
+function showCard(slots: HoverSlot[], index: number | null, now: number): void {
+  if (!renderer || index === null) return
+
+  const slot = slots[index]
+  const column = columns.get(slot.uuid)
+  if (!column) return
+
   if (now - hoverSince < HOVER_DELAY_MS) {
     // A board sitting still renders only when something changed, so the frame
     // that is meant to reveal the card has to be asked for.
     needsRender = true
+    return
+  }
+
+  const projected = renderer.projectSlot(index)
+  if (!projected) {
+    clearHover()
     return
   }
 
@@ -235,7 +631,8 @@ function onMesh(mesh: DecodeSuccess): void {
     playerName: mesh.playerName,
     plotIndex: mesh.plotIndex,
     occupiedHeight: mesh.occupiedHeight,
-    surfaceLevel: mesh.surfaceLevel
+    surfaceLevel: mesh.surfaceLevel,
+    minY: mesh.minY
   })
 
   plotWidth = mesh.sizeX
@@ -305,6 +702,23 @@ function scrub(dxPixels: number, dyPixels: number): void {
 
 function onWheel(event: WheelEvent): void {
   event.preventDefault()
+  if (props.covered) return
+
+  // A pinch on a trackpad arrives as a wheel event with ctrl held, which is
+  // also how a mouse asks to zoom. The plain wheel is already spoken for.
+  if (event.ctrlKey || event.metaKey) {
+    zoomBy(Math.exp(-event.deltaY * ZOOM_PER_PIXEL))
+    return
+  }
+
+  // Over a focused plot the wheel takes the cut up and down, which is the only
+  // thing on screen there is to scroll through.
+  if (focus.value) {
+    const notches = Math.sign(event.deltaY) * SLICE_PER_NOTCH
+    setSlice(focus.value.cut - notches)
+    return
+  }
+
   scrub(-event.deltaX * WHEEL_SCALE, -event.deltaY * WHEEL_SCALE)
 }
 
@@ -319,24 +733,198 @@ function trackPointer(event: PointerEvent): void {
 let dragging = false
 let dragX = 0
 let dragY = 0
+/** Distance travelled since the press, which tells a drag from a click. */
+let dragDistance = 0
 function onPointerDown(event: PointerEvent): void {
+  if (props.covered) return
+  contacts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  if (contacts.size > 1) {
+    // A second finger turns the gesture into a pinch: whatever the first one
+    // had started doing stops there rather than being dragged along with it.
+    dragging = false
+    pinchSpan = span()
+    return
+  }
+
   dragging = true
   dragX = event.clientX
   dragY = event.clientY
+  dragDistance = 0
   trackPointer(event)
   ;(event.target as Element).setPointerCapture?.(event.pointerId)
 }
 function onPointerMove(event: PointerEvent): void {
+  if (props.covered) return
+  if (contacts.has(event.pointerId)) {
+    contacts.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  }
+
+  if (contacts.size > 1) {
+    const reach = span()
+    if (pinchSpan > 0 && reach > 0) zoomBy(reach / pinchSpan)
+    pinchSpan = reach
+    return
+  }
+
   trackPointer(event)
   if (!dragging) return
-  scrub(event.clientX - dragX, event.clientY - dragY)
+
+  const dx = event.clientX - dragX
+  const dy = event.clientY - dragY
   dragX = event.clientX
   dragY = event.clientY
+  dragDistance += Math.hypot(dx, dy)
+
+  if (focusKey !== null) {
+    // The board is frozen behind the focused plot, so a drag turns the plot
+    // instead of scrubbing what is no longer moving.
+    focusSpin += dx * SPIN_PER_PIXEL
+    renderer?.setFocusSpin(focusSpin)
+    needsRender = true
+    return
+  }
+
+  scrub(dx, dy)
 }
-function onPointerUp(): void {
+/**
+ * A press that never became a drag is a click, and a click is a choice of plot.
+ *
+ * Any click while a plot is on the stage puts it back, wherever it lands: there
+ * is nothing else on a faded board to click on.
+ */
+function onPointerUp(event: PointerEvent): void {
+  // The one thing a covered board answers: a click asks for the cover to go.
+  if (props.covered) {
+    emit('dismiss')
+    return
+  }
+
+  contacts.delete(event.pointerId)
+  pinchSpan = 0
+
+  const clicked = dragging && dragDistance <= DRAG_SLOP_PX
   dragging = false
+  if (!clicked) return
+
+  if (focusKey !== null) {
+    releaseFocus()
+    return
+  }
+
+  // A click on bare floor picks nothing and is left alone.
+  const slot = slotUnderPointer()
+  if (!slot) return
+  takeFocus(slot.key, slot.uuid)
 }
-function onPointerLeave(): void {
+
+/**
+ * Puts a named player's plot on the stage, the way clicking it would.
+ *
+ * The lattice draws every player at many cells, so the copy nearest the middle
+ * of the screen is the one brought forward. A board with more plots than the
+ * view holds may not be drawing them anywhere, in which case the cell holding
+ * them is brought to the middle first.
+ */
+function focusPlayer(uuid: string): void {
+  const index = order.indexOf(uuid)
+  if (index === -1 || spacing <= 0) return
+  // Asking for a second plot while one is up is a change of mind, not a
+  // dismissal: the one on the stage goes back and the new one comes forward.
+  if (focusKey !== null) releaseFocus()
+
+  const drawn = lastSlots.filter((entry) => entry.uuid === uuid)
+  if (drawn.length) {
+    const nearest = drawn.reduce((a, b) =>
+      Math.hypot(a.x, a.z) <= Math.hypot(b.x, b.z) ? a : b
+    )
+    takeFocus(nearest.key, uuid)
+    return
+  }
+
+  // The row the board is already on is kept and the column solved for, so it
+  // travels the short way to the nearest cell holding this player rather than
+  // back to the lattice origin.
+  const count = order.length
+  const gz = Math.round(scroll.z / spacing)
+  const here = Math.round(scroll.x / spacing)
+  const wanted = (((index - gz * pickStride(count)) % count) + count) % count
+  let step = (((wanted - here) % count) + count) % count
+  if (step * 2 > count) step -= count
+  const gx = here + step
+
+  scroll.x = gx * spacing
+  scroll.z = gz * spacing
+  manualUntil = performance.now() + RESUME_AFTER_MS
+  needsRender = true
+  // The cell is not drawn until the next frame; the stage is keyed by the cell
+  // rather than by that frame's slot, so it finds it when it is.
+  takeFocus(`${gx}:${gz}`, uuid)
+}
+
+/** Puts a plot on the stage, facing as it stood and cut at nothing. */
+function takeFocus(key: string, uuid: string): void {
+  const column = columns.get(uuid)
+  if (!column) return
+
+  focusKey = key
+  focusTarget = 1
+  focusSpin = 0
+  renderer?.setFocusSpin(0)
+
+  sliceDrawn = column.occupiedHeight
+  sliceWanted = sliceDrawn
+  // The leaderboard name wins over the one captured at publish time, the same
+  // way the hover card picks one: a payload's name can be stale, or a bare uuid.
+  const entry = props.rows.find((row) => row.playerUuid === uuid)
+  focus.value = {
+    name: entry?.playerName ?? column.playerName,
+    score: entry ? entry.score.toLocaleString() : null,
+    cut: sliceDrawn,
+    layers: column.occupiedHeight,
+    worldY: column.minY + sliceDrawn - 1
+  }
+
+  needsRender = true
+  emit('focused', true)
+}
+
+/**
+ * The drawn copy under the pointer, picked on the spot if hovering has not
+ * already
+ * answered that.
+ *
+ * A tap has no hover before it: the press is the first the board hears of where
+ * the finger is, and waiting for the next frame to find out would lose taps
+ * shorter than one.
+ */
+function slotUnderPointer(): HoverSlot | null {
+  if (hoverKey !== null) return lastSlots.find((slot) => slot.key === hoverKey) ?? null
+  if (!renderer || !pointer) return null
+  const index = renderer.pickSlot(pointer.x, pointer.y)
+  return index === null ? null : (lastSlots[index] ?? null)
+}
+
+/**
+ * Escape lets the plot go, and the zoom keys work the board, for anyone not
+ * reaching for the pointer.
+ */
+function onKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    // A plot on the stage has first claim on it; with none up, Escape belongs
+    // to whatever is covering the board.
+    if (focusKey !== null) releaseFocus()
+    else emit('escape')
+    return
+  }
+
+  if (props.covered) return
+  if (event.key === '+' || event.key === '=') zoomBy(1 + ZOOM_PER_PIXEL * 60)
+  if (event.key === '-' || event.key === '_') zoomBy(1 - ZOOM_PER_PIXEL * 60)
+}
+function onPointerLeave(event?: PointerEvent): void {
+  if (event) contacts.delete(event.pointerId)
+  else contacts.clear()
+  pinchSpan = 0
   dragging = false
   pointer = null
   clearHover()
@@ -354,6 +942,22 @@ function onVisibilityChange(): void {
     frameHandle = requestAnimationFrame(frame)
   }
 }
+
+/**
+ * Something covering the board puts back whatever was on the stage.
+ *
+ * Opening the leaderboard over a focused plot would otherwise leave the plot
+ * standing on its backdrop behind the panel, with the board it came from
+ * nowhere to be seen.
+ */
+watch(
+  () => props.covered,
+  (covered) => {
+    if (covered) releaseFocus()
+    // The board has to keep drawing while it stands back or comes forward.
+    needsRender = true
+  }
+)
 
 watch(
   () => props.rows,
@@ -393,11 +997,13 @@ onMounted(() => {
   board.start()
 
   document.addEventListener('visibilitychange', onVisibilityChange)
+  document.addEventListener('keydown', onKeyDown)
   frameHandle = requestAnimationFrame(frame)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  document.removeEventListener('keydown', onKeyDown)
   if (frameHandle !== null) cancelAnimationFrame(frameHandle)
   frameHandle = null
   resizeObserver?.disconnect()
@@ -422,6 +1028,13 @@ onBeforeUnmount(() => {
   >
     <canvas ref="canvas" class="block h-full w-full" />
 
+    <!--
+      Tilt shift. The board is a model of a world and reads as one when only a
+      band of it is sharp; the labels and the controls sit above this, so they
+      stay legible wherever they are on screen.
+    -->
+    <div class="tilt-shift" :class="{ 'tilt-shift--off': focus }" aria-hidden="true" />
+
     <!-- The hovered plot's card, at that plot's top projected into screen space -->
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
       <Transition name="plot-card">
@@ -444,6 +1057,57 @@ onBeforeUnmount(() => {
       </Transition>
     </div>
 
+    <!--
+      The focused plot's own controls. The board behind it is black by the time
+      these are up, so they are laid out for that rather than for the board.
+    -->
+    <Transition name="plot-card">
+      <div
+        v-if="focus && !covered"
+        class="pointer-events-none absolute inset-0"
+        @pointerdown.stop
+        @pointerup.stop
+      >
+        <div class="absolute inset-y-0 right-0 flex items-center p-4 sm:p-6">
+          <div
+            class="pointer-events-auto flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-4 backdrop-blur-sm"
+          >
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-white/50">
+              Slice
+            </span>
+            <Slider
+              :model-value="focus.cut"
+              orientation="vertical"
+              :min="1"
+              :max="focus.layers"
+              class="h-40 sm:h-56"
+              aria-label="Slice height"
+              @update:model-value="setSlice(Number($event))"
+            />
+            <span class="text-xs font-semibold tabular-nums text-white/80">Y {{ focus.worldY }}</span>
+            <button
+              class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/40 transition-colors hover:text-white/80"
+              :disabled="focus.cut === focus.layers"
+              @click="setSlice(focus.layers)"
+            >
+              Whole
+            </button>
+          </div>
+        </div>
+
+        <div class="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1 text-center">
+          <span class="text-sm font-semibold text-white/90">
+            {{ focus.name }}
+            <span v-if="focus.score" class="ml-1 font-normal text-white/50">{{ focus.score }}</span>
+          </span>
+          <span class="text-[11px] text-white/45">
+            Drag to spin &middot; scroll to slice &middot; pinch to zoom &middot; click anywhere to
+            go back
+          </span>
+        </div>
+      </div>
+    </Transition>
+
     <p
       v-if="message"
       class="pointer-events-none absolute inset-x-0 bottom-16 text-center text-sm font-semibold text-slate-400"
@@ -463,17 +1127,72 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /*
+ * A band of the board is left alone and everything above and below it is put
+ * out of focus, which is what a tilt-shift lens does and why a real scene shot
+ * through one looks like a model.
+ *
+ * The blur is done by the compositor, over whatever is behind this element -
+ * the canvas - so the board itself is drawn once and sharp, and nothing in the
+ * renderer has to know about any of it. The band sits a little above the middle
+ * because the board recedes upwards: that is where the eye expects the subject
+ * of an isometric view to be.
+ *
+ * One layer at the far end and a gentler one at the near end, so the top of
+ * the board falls away faster than the bottom does, the way distance behaves.
+ */
+.tilt-shift {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(3.5px);
+  backdrop-filter: blur(3.5px);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 100%) 0%,
+    rgb(0 0 0 / 70%) 12%,
+    rgb(0 0 0 / 0%) 34%,
+    rgb(0 0 0 / 0%) 63%,
+    rgb(0 0 0 / 55%) 84%,
+    rgb(0 0 0 / 85%) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 100%) 0%,
+    rgb(0 0 0 / 70%) 12%,
+    rgb(0 0 0 / 0%) 34%,
+    rgb(0 0 0 / 0%) 63%,
+    rgb(0 0 0 / 55%) 84%,
+    rgb(0 0 0 / 85%) 100%
+  );
+  transition: opacity 180ms ease;
+}
+
+/*
+ * A plot brought forward is the subject, and a subject is not something to
+ * look at through a lens trick: it fills the height of the screen, and the
+ * band would cut its top and bottom off.
+ */
+.tilt-shift--off {
+  opacity: 0;
+  /* Not merely invisible: a backdrop filter left declared is a full-screen
+     blur the compositor may go on computing behind a plot that is covering it
+     anyway. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/*
  * The card is already held back for a moment, so it should arrive softly
  * rather than snap into place. It leaves faster than it arrives: a card that
  * lingers is labelling a plot the pointer has already left, and the one for the
  * new plot is waiting behind it.
  */
 .plot-card-enter-active {
-  transition: opacity 180ms ease-out;
+  transition: opacity 110ms ease-out;
 }
 
 .plot-card-leave-active {
-  transition: opacity 140ms ease-in;
+  transition: opacity 90ms ease-in;
 }
 
 .plot-card-enter-from,

@@ -295,3 +295,31 @@ describe('turnForCell', () => {
     }
   })
 })
+
+/**
+ * The scene has to be able to go the other way: given a player, find a cell on
+ * the lattice drawing them, so that picking a leaderboard row can bring a plot
+ * forward even when no copy of it is currently on screen.
+ */
+describe('solving a cell for a player', () => {
+  it('lands on the wanted player from any starting cell', () => {
+    for (const count of [1, 2, 3, 7, 12, 40]) {
+      const stride = pickStride(count)
+      for (let index = 0; index < count; index++) {
+        for (const [here, gz] of [
+          [0, 0],
+          [5, -3],
+          [-17, 11]
+        ]) {
+          // The row is kept and the column solved for, then stepped the short
+          // way round - which is what plotScene's focusPlayer does.
+          const wanted = (((index - gz * stride) % count) + count) % count
+          let step = (((wanted - here) % count) + count) % count
+          if (step * 2 > count) step -= count
+          expect(playerForCell(here + step, gz, count, stride)).toBe(index)
+          expect(Math.abs(step)).toBeLessThanOrEqual(count)
+        }
+      }
+    }
+  })
+})

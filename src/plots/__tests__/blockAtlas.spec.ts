@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { faceTilesForEntry, hasTexture, tileBounds, RenderClass, WHITE_TILE } from '../blockAtlas'
+import {
+  faceTilesForEntry,
+  hasTexture,
+  tileBounds,
+  tilePixelRect,
+  RenderClass,
+  WHITE_TILE
+} from '../blockAtlas'
 import {
   ATLAS_CELL,
   ATLAS_COLUMNS,
@@ -33,9 +40,28 @@ describe('faceTilesForEntry', () => {
     expect(faceTilesForEntry('minecraft:stone_slab').tiles).toEqual(
       faceTilesForEntry('minecraft:stone').tiles
     )
-    expect(faceTilesForEntry('minecraft:birch_door').tiles).toEqual(
+    expect(faceTilesForEntry('minecraft:birch_fence').tiles).toEqual(
       faceTilesForEntry('minecraft:birch_planks').tiles
     )
+  })
+
+  it('follows a brick shape back to the plural block it is made of', () => {
+    // `stone_brick_stairs` strips to `stone_brick`, and the atlas holds
+    // `stone_bricks`; without the plural every brick shape loses its texture.
+    expect(faceTilesForEntry('minecraft:stone_brick_stairs').tiles).toEqual(
+      faceTilesForEntry('minecraft:stone_bricks').tiles
+    )
+    expect(faceTilesForEntry('minecraft:mud_brick_wall').textured).toBe(true)
+    expect(faceTilesForEntry('minecraft:nether_brick_fence').textured).toBe(true)
+  })
+
+  it('prefers a block’s own texture to the material it is made of', () => {
+    // A door is panelled, so it is in the atlas in its own right and must not
+    // fall back to the planks its identifier is built from.
+    const door = faceTilesForEntry('minecraft:birch_door[half=lower]')
+    expect(door.tiles).not.toEqual(faceTilesForEntry('minecraft:birch_planks').tiles)
+    // And its two halves are different pictures.
+    expect(faceTilesForEntry('minecraft:birch_door[half=upper]').tiles).not.toEqual(door.tiles)
   })
 
   it('puts a distinct texture on the top, sides and bottom of a grass block', () => {
@@ -102,6 +128,27 @@ describe('the generated atlas table', () => {
     expect(ATLAS_WIDTH).toBe(ATLAS_COLUMNS * ATLAS_CELL)
     expect(ATLAS_HEIGHT).toBeGreaterThanOrEqual(rows * ATLAS_CELL)
     expect(ATLAS_CELL).toBe(ATLAS_TILE + ATLAS_PADDING * 2)
+  })
+})
+
+describe('tilePixelRect', () => {
+  it('lands on the same tile tileBounds does', () => {
+    for (const tile of [0, 1, ATLAS_COLUMNS, ATLAS_TILE_COUNT - 1]) {
+      const rect = tilePixelRect(tile)
+      const bounds = tileBounds(tile)
+      expect(rect.x / ATLAS_WIDTH).toBeCloseTo(bounds.u0)
+      // v is measured up from the bottom, y down from the top.
+      expect(1 - rect.y / ATLAS_HEIGHT).toBeCloseTo(bounds.v1)
+      expect(rect.size).toBe(ATLAS_TILE)
+    }
+  })
+
+  it('leaves the padding out of the tile it reports', () => {
+    const first = tilePixelRect(0)
+    expect(first.x).toBe(ATLAS_PADDING)
+    expect(first.y).toBe(ATLAS_PADDING)
+    expect(tilePixelRect(1).x - first.x).toBe(ATLAS_CELL)
+    expect(tilePixelRect(ATLAS_COLUMNS).y - first.y).toBe(ATLAS_CELL)
   })
 })
 

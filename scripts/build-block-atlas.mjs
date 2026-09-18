@@ -24,7 +24,8 @@ import { blockSpecs, facesOf, tintsOf } from './lib/blockTextures.mjs'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ATLAS_PATH = join(ROOT, 'src/assets/textures/blocks.png')
 const TABLE_PATH = join(ROOT, 'src/plots/blockAtlas.generated.ts')
-const TEXTURE_DIR = 'assets/minecraft/textures/block'
+const TEXTURES_DIR = 'assets/minecraft/textures'
+const TEXTURE_DIR = `${TEXTURES_DIR}/block`
 
 /** Every tile is a 16x16 block face, whatever resolution the pack ships. */
 const TILE = 16
@@ -73,16 +74,17 @@ function main() {
     let failed = null
     for (const slot of ['top', 'bottom', 'side']) {
       const candidates = [faces[slot]].flat()
-      const name = candidates.find((candidate) => pack.has(candidate)) ?? null
-      if (name === null) {
-        failed = candidates.join(' / ')
+      const found = candidates.find((candidate) => pack.has(sourceOf(candidate))) ?? null
+      if (found === null) {
+        failed = candidates.map(sourceOf).join(' / ')
         break
       }
+      const name = found
 
-      const key = `${name}|${tints[slot]}|${render}|${spec.frame ?? 0}`
+      const key = `${JSON.stringify(name)}|${tints[slot]}|${render}|${spec.frame ?? 0}`
       let tile = tileIds.get(key)
       if (tile === undefined) {
-        const texture = pack.texture(name)
+        const texture = carve(pack.texture(sourceOf(name)), name)
         tile = tiles.length
         tiles.push(bake(texture, tints[slot], render, spec.frame ?? 0))
         tileIds.set(key, tile)
@@ -118,23 +120,69 @@ const rel = (path) => path.slice(ROOT.length + 1)
 function openPack(source) {
   if (!existsSync(source)) throw new Error(`no such pack: ${source}`)
 
+  // A plain name is a block texture; a name with a folder in it is a path
+  // under `textures/`, which is where the entity sheets live.
+  const path = (name) => (name.includes('/') ? `${TEXTURES_DIR}/${name}` : `${TEXTURE_DIR}/${name}`)
+
   if (statSync(source).isDirectory()) {
     // Accept either the pack root or the block texture folder itself.
-    const base = existsSync(join(source, TEXTURE_DIR)) ? join(source, TEXTURE_DIR) : source
+    const root = existsSync(join(source, TEXTURE_DIR)) ? source : null
+    const base = root ? join(source, TEXTURE_DIR) : source
     if (!readdirSync(base).some((file) => file.endsWith('.png'))) {
       throw new Error(`no block textures under ${base}`)
     }
+    const file = (name) =>
+      name.includes('/') ? join(root ?? source, path(name)) : join(base, `${name}.png`)
     return {
-      has: (name) => existsSync(join(base, `${name}.png`)),
-      texture: (name) => decodePng(readFileSync(join(base, `${name}.png`)))
+      has: (name) => existsSync(file(name)),
+      texture: (name) => decodePng(readFileSync(file(name)))
     }
   }
 
   const zip = readZip(readFileSync(source))
   return {
-    has: (name) => zip.has(`${TEXTURE_DIR}/${name}.png`),
-    texture: (name) => decodePng(zip.read(`${TEXTURE_DIR}/${name}.png`))
+    has: (name) => zip.has(`${path(name)}.png`),
+    texture: (name) => decodePng(zip.read(`${path(name)}.png`))
   }
+}
+
+/** The texture a face is taken from, whether it is the whole file or a part. */
+function sourceOf(face) {
+  return typeof face === 'string' ? face : face.from
+}
+
+/**
+ * Cuts a face out of a texture that holds more than one.
+ *
+ * Chests, signs and mob heads are entity models: one sheet carries every face
+ * of the model, laid out for that model alone. A block's tile is one face, so
+ * the face has to be cut out by hand. Rectangles are written against the sheet
+ * size the game ships and scaled to whatever the pack ships, so a pack at four
+ * times the resolution carves the same pieces.
+ *
+ * `stack` takes several pieces and puts them one above another, which is how a
+ * chest's side is made: the lid's band of it sits on top of the base's.
+ */
+function carve(image, face) {
+  if (typeof face === 'string') return image
+
+  const scale = image.width / face.sheet
+  const pieces = (face.stack ?? [face.rect]).map(([x, y, width, height]) =>
+    image.crop(x * scale, y * scale, width * scale, height * scale)
+  )
+  if (pieces.length === 1) return pieces[0]
+
+  const width = Math.max(...pieces.map((piece) => piece.width))
+  const height = pieces.reduce((total, piece) => total + piece.height, 0)
+  const out = new Bitmap(width, height)
+  let top = 0
+  for (const piece of pieces) {
+    for (let y = 0; y < piece.height; y++) {
+      for (let x = 0; x < piece.width; x++) out.set(x, top + y, piece.pixel(x, y))
+    }
+    top += piece.height
+  }
+  return out
 }
 
 function whiteTile() {

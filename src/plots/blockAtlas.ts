@@ -72,15 +72,20 @@ function build(paletteEntry: string): FaceTiles {
   const bracket = paletteEntry.indexOf('[')
   const baseId = bracket === -1 ? paletteEntry : paletteEntry.slice(0, bracket)
 
-  // Snow lying on the ground is a state of the block underneath it, and the
-  // atlas carries those states as their own entries.
-  const snowy =
-    blockProperty(paletteEntry, 'snowy') === 'true'
+  // Some states are their own texture: snow lying on the ground is a state of
+  // the block underneath it, and the upper half of a tall plant is a different
+  // picture from its lower half. The atlas carries those as entries of their
+  // own, keyed by the state that selects them.
+  const stated =
+    (blockProperty(paletteEntry, 'snowy') === 'true'
       ? (BLOCK_TILES[`${baseId}[snowy=true]`] ?? null)
-      : null
+      : null) ??
+    (blockProperty(paletteEntry, 'half') === 'upper'
+      ? (BLOCK_TILES[`${baseId}[half=upper]`] ?? null)
+      : null)
 
-  const id = snowy === null ? resolveBlockId(baseId, hasTiles) : null
-  const entry: BlockTiles | null = snowy ?? (id === null ? null : BLOCK_TILES[id])
+  const id = stated === null ? resolveBlockId(baseId, hasTiles) : null
+  const entry: BlockTiles | null = stated ?? (id === null ? null : BLOCK_TILES[id])
   if (entry === null) return UNTEXTURED
 
   const [top, bottom, side, render] = entry
@@ -114,6 +119,23 @@ export interface TileBounds {
   v0: number
   u1: number
   v1: number
+}
+
+/**
+ * Where a tile sits in the atlas image, in pixels from its top left.
+ *
+ * For lifting a tile back out of the atlas: anything sampling the atlas on the
+ * GPU wants `tileBounds` instead.
+ */
+export function tilePixelRect(tile: number): { x: number; y: number; size: number } {
+  const column = tile % ATLAS_COLUMNS
+  const row = Math.floor(tile / ATLAS_COLUMNS)
+
+  return {
+    x: column * ATLAS_CELL + ATLAS_PADDING,
+    y: row * ATLAS_CELL + ATLAS_PADDING,
+    size: ATLAS_TILE
+  }
 }
 
 /**

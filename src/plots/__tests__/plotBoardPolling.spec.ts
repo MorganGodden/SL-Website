@@ -26,6 +26,8 @@ const decode = vi.fn(async (payload: PlotSnapshot) => ({
 vi.mock('../decodeClient', () => ({
   DecodeClient: class {
     decode = decode
+    slice = vi.fn()
+    forget = vi.fn()
     dispose = vi.fn()
   }
 }))

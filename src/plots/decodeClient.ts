@@ -1,4 +1,10 @@
-import type { DecodeRequest, DecodeResponse, DecodeSuccess } from './decode.worker'
+import type {
+  DecodeRequest,
+  DecodeResponse,
+  DecodeSuccess,
+  ForgetRequest,
+  SliceRequest
+} from './decode.worker'
 import type { PlotSnapshot } from './types'
 
 /**
@@ -47,8 +53,36 @@ export class DecodeClient {
     const requestId = this.nextRequestId++
     return new Promise<DecodeSuccess>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject })
-      worker.postMessage({ requestId, payload } satisfies DecodeRequest)
+      worker.postMessage({ kind: 'decode', requestId, payload } satisfies DecodeRequest)
     })
+  }
+
+  /**
+   * Re-meshes a column already decoded, cut off at `ceiling` layers.
+   *
+   * Rejects when the worker has no blocks for that player, which is what
+   * happens if the plot was dropped between the request and the answer.
+   */
+  slice(playerUuid: string, ceiling: number, from?: number): Promise<DecodeSuccess> {
+    const worker = this.ensureWorker()
+    const requestId = this.nextRequestId++
+    return new Promise<DecodeSuccess>((resolve, reject) => {
+      this.pending.set(requestId, { resolve, reject })
+      worker.postMessage({
+        kind: 'slice',
+        requestId,
+        playerUuid,
+        ceiling,
+        from
+      } satisfies SliceRequest)
+    })
+  }
+
+  /** Releases the blocks held for a player the board no longer shows. */
+  forget(playerUuid: string): void {
+    // Nothing is held until a column has been decoded, so a worker that was
+    // never started has nothing to forget.
+    this.worker?.postMessage({ kind: 'forget', playerUuid } satisfies ForgetRequest)
   }
 
   dispose(): void {
