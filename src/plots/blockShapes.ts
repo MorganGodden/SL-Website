@@ -149,11 +149,65 @@ const CROSS_BLOCKS = new Set([
   'minecraft:spore_blossom',
   'minecraft:hanging_roots',
   'minecraft:glow_lichen',
-  'minecraft:bamboo'
+  'minecraft:bamboo',
+
+  // Later additions to the game, and the ones a builder reaches for on a
+  // themed plot. Anything drawn as a plant belongs here rather than being
+  // left to default to a cube of its own texture.
+  'minecraft:bush',
+  'minecraft:firefly_bush',
+  'minecraft:short_dry_grass',
+  'minecraft:tall_dry_grass',
+  'minecraft:cactus_flower',
+  'minecraft:open_eyeblossom',
+  'minecraft:closed_eyeblossom',
+  'minecraft:kelp',
+  'minecraft:kelp_plant',
+  'minecraft:tall_seagrass',
+  'minecraft:small_dripleaf',
+  'minecraft:pointed_dripstone',
+  'minecraft:sculk_vein',
+  'minecraft:resin_clump',
+  'minecraft:pale_hanging_moss',
+  // A stem is a vine on the ground until its fruit grows; the game draws both
+  // states as crossed planes. The suffix cannot do this one: a crimson stem
+  // and a mushroom stem are solid blocks.
+  'minecraft:melon_stem',
+  'minecraft:pumpkin_stem',
+  'minecraft:attached_melon_stem',
+  'minecraft:attached_pumpkin_stem'
 ])
 
 /** Suffixes that make a block a plant whatever it is made of. */
-const CROSS_SUFFIXES = ['_sapling', '_tulip', '_mushroom', '_fungus', '_roots', '_sprouts']
+const CROSS_SUFFIXES = [
+  '_sapling',
+  '_tulip',
+  '_mushroom',
+  '_fungus',
+  '_roots',
+  '_sprouts',
+  '_propagule',
+  '_crop',
+  '_vines',
+  '_vines_plant',
+  // Coral and its fans, alive or dead. `_coral_block` is a cube and does not
+  // end in either.
+  '_coral',
+  '_fan'
+]
+
+/**
+ * Plants that lie flat on the ground: one texture, one sixteenth thick, drawn
+ * the way a carpet is.
+ */
+const FLAT_BLOCKS = new Set([
+  'minecraft:lily_pad',
+  'minecraft:leaf_litter',
+  'minecraft:pink_petals',
+  'minecraft:wildflowers',
+  'minecraft:frogspawn',
+  'minecraft:tripwire'
+])
 
 /** Thin uprights: chains, rods and the like. */
 const POSTS = new Set([
@@ -162,6 +216,13 @@ const POSTS = new Set([
   'minecraft:lightning_rod',
   'minecraft:candle'
 ])
+
+/**
+ * Suffixes of the thin uprights that come in families: a candle of every dye,
+ * a chain of every copper weathering, a banner of every colour. Each was
+ * drawn as a full cube of its own texture until it was named here.
+ */
+const POST_SUFFIXES = ['_candle', '_chain', '_banner', '_rod']
 
 /**
  * Blocks that are a fixed pile of boxes whatever state they carry.
@@ -216,7 +277,26 @@ const FIXED_BOXES: Record<string, readonly ShapeBox[]> = {
     box(0, 0, 14, 2, 14, 16),
     box(14, 0, 14, 16, 14, 16)
   ],
-  'minecraft:bell': [box(5, 4, 5, 11, 12, 11), box(4, 12, 4, 12, 16, 12)]
+  'minecraft:bell': [box(5, 4, 5, 11, 12, 11), box(4, 12, 4, 12, 16, 12)],
+  'minecraft:end_portal_frame': [box(0, 0, 0, 16, 13, 16)],
+  'minecraft:heavy_core': [box(4, 0, 4, 12, 8, 12)],
+  'minecraft:sniffer_egg': [box(1, 0, 1, 15, 16, 15)],
+  'minecraft:sculk_sensor': [box(0, 0, 0, 16, 8, 16)],
+  'minecraft:calibrated_sculk_sensor': [box(0, 0, 0, 16, 8, 16)],
+  'minecraft:sculk_shrieker': [box(0, 0, 0, 16, 8, 16)],
+  // The chorus plant is a knobbly thing; its arms reach for its neighbours,
+  // which at this size is a lump in the middle of the block either way.
+  'minecraft:chorus_plant': [box(3, 3, 3, 13, 13, 13)],
+  'minecraft:chorus_flower': [box(2, 2, 2, 14, 14, 14)],
+  // Another pot for a floor and four walls, one sixteenth thinner than the
+  // cauldron's.
+  'minecraft:composter': [
+    box(0, 0, 0, 16, 2, 16),
+    box(0, 2, 0, 2, 16, 16),
+    box(14, 2, 0, 16, 16, 16),
+    box(2, 2, 0, 14, 16, 2),
+    box(2, 2, 14, 14, 16, 16)
+  ]
 }
 
 /** The cauldrons and anvils that are the same shape with something in them. */
@@ -263,6 +343,8 @@ export type ShapeKind =
   | 'pickle'
   | 'lever'
   | 'piston_head'
+  | 'shelf'
+  | 'portal'
 
 /**
  * What kind of shape a block has, from its identifier alone.
@@ -273,10 +355,20 @@ export type ShapeKind =
 export function kindOf(baseId: string): ShapeKind {
   if (CROSS_BLOCKS.has(baseId)) return 'cross'
   if (FIXED_BOXES[ALIASES[baseId] ?? baseId] !== undefined) return 'boxed'
+  if (FLAT_BLOCKS.has(baseId) || baseId.endsWith('_petals')) return 'carpet'
   for (const suffix of CROSS_SUFFIXES) {
     if (baseId.endsWith(suffix)) return 'cross'
   }
   if (POSTS.has(baseId)) return 'post'
+
+  // A cake with a candle in it is still a cake, and a banner on a wall hangs
+  // flat against it rather than standing up, so both are answered before the
+  // families they otherwise belong to.
+  if (baseId === 'minecraft:candle_cake' || baseId.endsWith('_candle_cake')) return 'cake'
+  if (baseId.endsWith('_wall_banner')) return 'panel'
+  for (const suffix of POST_SUFFIXES) {
+    if (baseId.endsWith(suffix)) return 'post'
+  }
 
   if (baseId === 'minecraft:water' || baseId === 'minecraft:lava') return 'liquid'
   if (baseId === 'minecraft:redstone_wire') return 'wire'
@@ -285,7 +377,15 @@ export function kindOf(baseId: string): ShapeKind {
   if (baseId === 'minecraft:farmland' || baseId === 'minecraft:dirt_path') return 'shaved'
   if (baseId === 'minecraft:ladder' || baseId === 'minecraft:vine') return 'panel'
   if (baseId === 'minecraft:flower_pot' || baseId.startsWith('minecraft:potted_')) return 'pot'
-  if (baseId === 'minecraft:lantern' || baseId === 'minecraft:soul_lantern') return 'lantern'
+  // A sea lantern and a jack o'lantern are cubes that happen to be named after
+  // a lantern; the hanging kind is everything else, copper ones included.
+  if (baseId === 'minecraft:sea_lantern' || baseId === 'minecraft:jack_o_lantern') return 'full'
+  if (baseId === 'minecraft:lantern' || baseId.endsWith('_lantern')) return 'lantern'
+  if (baseId === 'minecraft:item_frame' || baseId === 'minecraft:glow_item_frame') return 'panel'
+  if (baseId === 'minecraft:nether_portal') return 'portal'
+  // A hook is a small thing on a wall, which is the shape a wall torch is.
+  if (baseId === 'minecraft:tripwire_hook') return 'wall_torch'
+  if (baseId.endsWith('_shelf')) return 'shelf'
   if (baseId === 'minecraft:cake') return 'cake'
   if (baseId === 'minecraft:sea_pickle') return 'pickle'
   if (baseId === 'minecraft:lever') return 'lever'
@@ -433,6 +533,16 @@ export function shapeFor(paletteEntry: string, context: ShapeContext): BlockShap
       return leverShape(paletteEntry)
     case 'piston_head':
       return pistonHeadShape(paletteEntry)
+    case 'shelf':
+      // A board on the wall behind it, written the way the ladder above is:
+      // facing north puts the block it hangs on to the south.
+      return shape([turn(box(0, 5, 8, 16, 11, 16), turnsTo(facingOf(paletteEntry), 'north'))])
+    case 'portal':
+      // A sheet across the frame, turned by the axis it stands along rather
+      // than by a facing: a portal has no front.
+      return shape([
+        turn(box(0, 0, 6, 16, 16, 10), blockProperty(paletteEntry, 'axis') === 'z' ? 1 : 0)
+      ])
     default:
       return FULL
   }

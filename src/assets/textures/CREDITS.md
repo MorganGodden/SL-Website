@@ -12,13 +12,16 @@ resource pack, by **XSSheep**, continued for current game versions by
 
 ## What is in the atlas
 
-Only the block faces the board can actually draw: a few hundred 16x16 tiles out
-of the pack's ~2000 textures, rearranged into a grid and reworked for a web
-renderer. Each tile is padded with a copy of its own edge pixels so that
-neighbouring tiles cannot bleed into each other at a distance, biome-tinted
-textures (grass, leaves, water) have their tint baked in, animated textures are
-reduced to their first frame, and textures on blocks the board treats as solid
-are composited onto an opaque background.
+Every block texture the pack ships, as 16x16 tiles in a grid, reworked for a
+web renderer. The board draws whatever a builder places, so the atlas carries
+the whole `block/` folder rather than a chosen few: anything narrower leaves a
+newly placed block drawn as a flat colour.
+
+Each tile is padded with a copy of its own edge pixels so that neighbouring
+tiles cannot bleed into each other at a distance, biome-tinted textures (grass,
+leaves, water) have their tint baked in, animated textures are reduced to their
+first frame, and textures on blocks the board treats as solid are composited
+onto an opaque background.
 
 No other part of the pack is redistributed here, and the pack itself is not
 checked in.

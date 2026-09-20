@@ -6,9 +6,12 @@
  *
  *   npm run build:block-atlas -- <pack.zip | pack directory>
  *
- * Run rarely — only when the pack changes or a block is added to the spec — so
- * both outputs are committed. The pack itself is not: it is 34MB, and only the
- * few hundred tiles the board can actually draw end up in the atlas.
+ * Run rarely — only when the pack changes — so both outputs are committed. The
+ * pack itself is not: it is 34MB of textures at whatever resolution it ships,
+ * against an atlas of 16x16 tiles.
+ *
+ * Every block texture in the pack is baked, not a chosen list: a block nobody
+ * wrote a spec for is exactly the one a builder is about to place.
  *
  * Tiles are padded by replicating their edge pixels, which is what keeps one
  * block's texture from bleeding into its neighbour's when the GPU samples a
@@ -19,7 +22,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Bitmap, decodePng, encodePng } from './lib/png.mjs'
 import { readZip } from './lib/zip.mjs'
-import { blockSpecs, facesOf, tintsOf } from './lib/blockTextures.mjs'
+import { autoSpecs, blockSpecs, facesOf, tintsOf } from './lib/blockTextures.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ATLAS_PATH = join(ROOT, 'src/assets/textures/blocks.png')
@@ -32,15 +35,36 @@ const TILE = 16
 /**
  * Transparent margin around each tile, filled by repeating its edge pixels.
  *
- * Half a tile, which keeps neighbouring tiles apart for the first four mip
- * levels — far past the point where a block is a single pixel on screen.
+ * A quarter of a tile, which keeps neighbouring tiles apart for the first two
+ * mip levels: past that a block is a couple of pixels on screen, and the
+ * margin costs more in atlas area than the bleed costs in looks.
  */
-const PADDING = 8
+const PADDING = 4
 const CELL = TILE + PADDING * 2
-/** Atlas width in tiles. Sixteen keeps the image 512px wide. */
-const COLUMNS = 16
+
+/**
+ * Atlas width in tiles: whichever power of two leaves the grid closest to
+ * square, so that neither side of the image passes the 2048px a modest GPU
+ * guarantees now that the whole pack is baked.
+ */
+const columnsFor = (tiles) => Math.max(16, 2 ** Math.round(Math.log2(Math.sqrt(tiles))))
 
 const RENDER_CLASSES = { opaque: 0, cutout: 1, translucent: 2 }
+
+/**
+ * How far from either end of the alpha range a texel is still read as fully
+ * opaque or fully clear, when a block's render class is being guessed from its
+ * texture. Without it one stray anti-aliased pixel would make a solid block
+ * translucent, and a translucent block does not hide what is behind it.
+ */
+const ALPHA_EDGE = 8
+
+/**
+ * How much of a texture has to be half-transparent before the block is drawn
+ * as see-through. A handful of soft texels is an edge, not a window, and a
+ * block wrongly called translucent stops hiding what is behind it.
+ */
+const TRANSLUCENT_SHARE = 0.25
 
 /** Below this, a texture is treated as greyscale and a biome tint applies. */
 const TINTABLE_SATURATION = 0.25
@@ -53,7 +77,9 @@ function main() {
   }
 
   const pack = openPack(resolve(source))
-  const specs = blockSpecs()
+  // Every block the pack has a texture for, with the curated specs over the
+  // top: a block the board has never seen still gets its own texture.
+  const specs = { ...autoSpecs(pack.list()), ...blockSpecs() }
 
   const tiles = []
   const tileIds = new Map()
@@ -68,9 +94,9 @@ function main() {
   for (const [blockId, spec] of Object.entries(specs)) {
     const faces = facesOf(spec)
     const tints = tintsOf(spec)
-    const render = RENDER_CLASSES[spec.render ?? 'opaque']
+    let render = RENDER_CLASSES[spec.render ?? 'opaque']
 
-    const resolved = {}
+    const names = {}
     let failed = null
     for (const slot of ['top', 'bottom', 'side']) {
       const candidates = [faces[slot]].flat()
@@ -79,8 +105,23 @@ function main() {
         failed = candidates.map(sourceOf).join(' / ')
         break
       }
-      const name = found
+      names[slot] = found
+    }
 
+    if (failed) {
+      missing.push(`${blockId} (no ${failed})`)
+      continue
+    }
+
+    // Nothing said how a swept-up block is drawn, so its own transparency says
+    // it: solid through, holes in it, or see-through.
+    if (spec.auto) {
+      render = renderClassOf(Object.values(names).map((name) => pack.texture(sourceOf(name))))
+    }
+
+    const resolved = {}
+    for (const slot of ['top', 'bottom', 'side']) {
+      const name = names[slot]
       const key = `${JSON.stringify(name)}|${tints[slot]}|${render}|${spec.frame ?? 0}`
       let tile = tileIds.get(key)
       if (tile === undefined) {
@@ -91,20 +132,16 @@ function main() {
       }
       resolved[slot] = tile
     }
-
-    if (failed) {
-      missing.push(`${blockId} (no ${failed})`)
-      continue
-    }
     blocks[blockId] = [resolved.top, resolved.bottom, resolved.side, render]
   }
 
-  const rows = Math.ceil(tiles.length / COLUMNS)
-  const atlas = pack_(tiles, rows)
+  const columns = columnsFor(tiles.length)
+  const rows = Math.ceil(tiles.length / columns)
+  const atlas = pack_(tiles, columns, rows)
 
   mkdirSync(dirname(ATLAS_PATH), { recursive: true })
   writeFileSync(ATLAS_PATH, encodePng(atlas))
-  writeFileSync(TABLE_PATH, generateTable(blocks, tiles.length, rows))
+  writeFileSync(TABLE_PATH, generateTable(blocks, tiles.length, columns, rows))
 
   console.log(`atlas  ${atlas.width}x${atlas.height}, ${tiles.length} tiles -> ${rel(ATLAS_PATH)}`)
   console.log(`blocks ${Object.keys(blocks).length} mapped -> ${rel(TABLE_PATH)}`)
@@ -124,6 +161,27 @@ function openPack(source) {
   // under `textures/`, which is where the entity sheets live.
   const path = (name) => (name.includes('/') ? `${TEXTURES_DIR}/${name}` : `${TEXTURE_DIR}/${name}`)
 
+  // Decoding is the slow part and every texture is now asked for twice, once
+  // to read its transparency and once to bake it.
+  const memo = (pack) => {
+    const decoded = new Map()
+    return {
+      ...pack,
+      texture: (name) => {
+        let image = decoded.get(name)
+        if (image === undefined) {
+          image = pack.texture(name)
+          decoded.set(name, image)
+        }
+        return image
+      }
+    }
+  }
+
+  /** The name of every block texture, which is what a full sweep works from. */
+  const blockNames = (files) =>
+    files.filter((file) => file.endsWith('.png')).map((file) => file.slice(0, -4))
+
   if (statSync(source).isDirectory()) {
     // Accept either the pack root or the block texture folder itself.
     const root = existsSync(join(source, TEXTURE_DIR)) ? source : null
@@ -133,17 +191,47 @@ function openPack(source) {
     }
     const file = (name) =>
       name.includes('/') ? join(root ?? source, path(name)) : join(base, `${name}.png`)
-    return {
+    return memo({
       has: (name) => existsSync(file(name)),
-      texture: (name) => decodePng(readFileSync(file(name)))
-    }
+      texture: (name) => decodePng(readFileSync(file(name))),
+      list: () => blockNames(readdirSync(base))
+    })
   }
 
   const zip = readZip(readFileSync(source))
-  return {
+  return memo({
     has: (name) => zip.has(`${path(name)}.png`),
-    texture: (name) => decodePng(zip.read(`${path(name)}.png`))
+    texture: (name) => decodePng(zip.read(`${path(name)}.png`)),
+    list: () =>
+      blockNames(
+        [...zip.names()]
+          .filter((entry) => entry.startsWith(`${TEXTURE_DIR}/`))
+          .map((entry) => entry.slice(TEXTURE_DIR.length + 1))
+          .filter((entry) => !entry.includes('/'))
+      )
+  })
+}
+
+/**
+ * The render class a texture's own transparency implies: solid through,
+ * hard-edged holes, or see-through. Only what the specs do not say outright.
+ */
+function renderClassOf(textures) {
+  let texels = 0
+  let partial = 0
+  let holes = 0
+
+  for (const texture of textures) {
+    for (let i = 3; i < texture.data.length; i += 4) {
+      const alpha = texture.data[i]
+      texels++
+      if (alpha <= ALPHA_EDGE) holes++
+      else if (alpha < 255 - ALPHA_EDGE) partial++
+    }
   }
+
+  if (partial >= texels * TRANSLUCENT_SHARE) return RENDER_CLASSES.translucent
+  return holes + partial > 0 ? RENDER_CLASSES.cutout : RENDER_CLASSES.opaque
 }
 
 /** The texture a face is taken from, whether it is the whole file or a part. */
@@ -355,12 +443,12 @@ function bleed(image) {
 }
 
 /** Lays the tiles out in a grid, each one padded with its own edge pixels. */
-function pack_(tiles, rows) {
-  const atlas = new Bitmap(COLUMNS * CELL, rows * CELL)
+function pack_(tiles, columns, rows) {
+  const atlas = new Bitmap(columns * CELL, rows * CELL)
 
   tiles.forEach((tile, index) => {
-    const originX = (index % COLUMNS) * CELL + PADDING
-    const originY = Math.floor(index / COLUMNS) * CELL + PADDING
+    const originX = (index % columns) * CELL + PADDING
+    const originY = Math.floor(index / columns) * CELL + PADDING
 
     for (let y = -PADDING; y < TILE + PADDING; y++) {
       for (let x = -PADDING; x < TILE + PADDING; x++) {
@@ -372,7 +460,7 @@ function pack_(tiles, rows) {
   return atlas
 }
 
-function generateTable(blocks, tileCount, rows) {
+function generateTable(blocks, tileCount, columns, rows) {
   const entries = Object.entries(blocks)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([id, tuple]) => `  '${id}': [${tuple.join(', ')}]`)
@@ -391,9 +479,9 @@ export const ATLAS_TILE = ${TILE}
 export const ATLAS_PADDING = ${PADDING}
 /** Tile pitch: a tile plus its margin on both sides. */
 export const ATLAS_CELL = ${CELL}
-export const ATLAS_COLUMNS = ${COLUMNS}
+export const ATLAS_COLUMNS = ${columns}
 export const ATLAS_ROWS = ${rows}
-export const ATLAS_WIDTH = ${COLUMNS * CELL}
+export const ATLAS_WIDTH = ${columns * CELL}
 export const ATLAS_HEIGHT = ${rows * CELL}
 /** Number of tiles laid out, including the white tile at index 0. */
 export const ATLAS_TILE_COUNT = ${tileCount}

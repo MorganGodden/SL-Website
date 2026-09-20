@@ -49,6 +49,42 @@ describe('kindOf', () => {
     expect(kindOf('minecraft:brown_mushroom_block')).toBe('full')
     expect(kindOf('minecraft:mushroom_stem')).toBe('full')
   })
+
+  it('knows the plants the game keeps adding', () => {
+    expect(kindOf('minecraft:bush')).toBe('cross')
+    expect(kindOf('minecraft:short_dry_grass')).toBe('cross')
+    expect(kindOf('minecraft:cave_vines_plant')).toBe('cross')
+    expect(kindOf('minecraft:pitcher_crop')).toBe('cross')
+    expect(kindOf('minecraft:mangrove_propagule')).toBe('cross')
+    expect(kindOf('minecraft:pumpkin_stem')).toBe('cross')
+    expect(kindOf('minecraft:dead_fire_coral')).toBe('cross')
+    expect(kindOf('minecraft:horn_coral_wall_fan')).toBe('cross')
+    // Coral compressed into a block is a block, and so is the stem of a tree.
+    expect(kindOf('minecraft:brain_coral_block')).toBe('full')
+    expect(kindOf('minecraft:crimson_stem')).toBe('full')
+  })
+
+  it('lays the flat plants on the ground', () => {
+    expect(kindOf('minecraft:lily_pad')).toBe('carpet')
+    expect(kindOf('minecraft:leaf_litter')).toBe('carpet')
+    expect(kindOf('minecraft:pink_petals')).toBe('carpet')
+    expect(kindOf('minecraft:wildflowers')).toBe('carpet')
+    expect(kindOf('minecraft:pale_moss_carpet')).toBe('carpet')
+  })
+
+  it('follows the families that come one per colour or weathering', () => {
+    expect(kindOf('minecraft:white_candle')).toBe('post')
+    expect(kindOf('minecraft:red_banner')).toBe('post')
+    expect(kindOf('minecraft:copper_chain')).toBe('post')
+    expect(kindOf('minecraft:weathered_lightning_rod')).toBe('post')
+    expect(kindOf('minecraft:copper_lantern')).toBe('lantern')
+    expect(kindOf('minecraft:oak_shelf')).toBe('shelf')
+    // Named after a lantern, shaped like a cube; a wall banner hangs flat.
+    expect(kindOf('minecraft:sea_lantern')).toBe('full')
+    expect(kindOf('minecraft:jack_o_lantern')).toBe('full')
+    expect(kindOf('minecraft:red_wall_banner')).toBe('panel')
+    expect(kindOf('minecraft:pink_candle_cake')).toBe('cake')
+  })
 })
 
 describe('isFullCube', () => {
@@ -241,6 +277,24 @@ describe('the odds and ends', () => {
     expect(poppy.cross).toBe(true)
     expect(poppy.boxes).toHaveLength(0)
     expect(poppy.full).toBe(false)
+  })
+
+  it('turns a shelf to the wall it hangs on', () => {
+    const north = shapeFor('minecraft:oak_shelf[facing=north]', ALONE).boxes[0]
+    const east = shapeFor('minecraft:oak_shelf[facing=east]', ALONE).boxes[0]
+    // Against the south wall when it faces north, and the west when it faces
+    // east; the board itself is the same height either way.
+    expect(north.z1).toBe(1)
+    expect(east.x0).toBe(0)
+    expect(east.y0).toBe(north.y0)
+  })
+
+  it('stands a portal along its own axis', () => {
+    const acrossX = shapeFor('minecraft:nether_portal[axis=x]', ALONE).boxes[0]
+    const acrossZ = shapeFor('minecraft:nether_portal[axis=z]', ALONE).boxes[0]
+    expect(acrossX.x1 - acrossX.x0).toBe(1)
+    expect(acrossZ.z1 - acrossZ.z0).toBe(1)
+    expect(acrossX.z1 - acrossX.z0).toBeCloseTo(acrossZ.x1 - acrossZ.x0)
   })
 })
 

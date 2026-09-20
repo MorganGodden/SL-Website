@@ -13,13 +13,112 @@
  * would be a curiosity.
  */
 
+/**
+ * Suffixes the convention uses for a block's individual faces. `_end` is the
+ * pair of faces at the ends of a pillar, which the game names once.
+ */
+const FACE_SUFFIXES = ['_top', '_bottom', '_side', '_end']
+
+/**
+ * Shapes the board resolves back to the material they are made of, the same
+ * walk `src/plots/blockIds.ts` does at runtime — keep the two in step.
+ *
+ * A sweep of the pack must leave these alone: packs ship `oak_fence_side` and
+ * `stone_slab_top` as pictures of a whole fence or of the slab the game had
+ * ten versions ago, and a fence post sampling a picture of a fence is worse
+ * than the planks it samples today.
+ */
+const SHAPE_SUFFIXES = [
+  '_slab',
+  '_stairs',
+  '_wall',
+  '_fence_gate',
+  '_fence',
+  '_pressure_plate',
+  '_button',
+  '_sign',
+  '_carpet',
+  '_pane'
+]
+
+/**
+ * Every block the pack has textures for, read off the texture names alone.
+ *
+ * The curated list below covers the blocks the board was built around, and
+ * nothing else: a builder placing something outside it got a flat colour,
+ * which is what "the block came out wrong" looks like. This sweeps the whole
+ * `block/` folder instead, groups the names by the same `X` / `X_top` /
+ * `X_side` / `X_bottom` / `X_end` convention the overrides are written against,
+ * and produces a spec for every group that looks like a block.
+ *
+ * These are only a floor: `blockSpecs()` is applied over the top, so every
+ * curated face, tint and render class still wins. A group with no texture of
+ * its own name and only one face is a fragment of some other block's model
+ * (`beehive_front`, `lectern_base`), not a block, and is passed over.
+ */
+export function autoSpecs(textureNames) {
+  const have = new Set(textureNames)
+  const bases = new Set(
+    textureNames.map((name) => {
+      const suffix = FACE_SUFFIXES.find((end) => name.endsWith(end) && name.length > end.length)
+      return suffix === undefined ? name : name.slice(0, -suffix.length)
+    })
+  )
+
+  const specs = {}
+  for (const base of bases) {
+    if (SHAPE_SUFFIXES.some((suffix) => base.endsWith(suffix))) continue
+
+    const face = (suffix) => (have.has(base + suffix) ? base + suffix : null)
+    const plain = have.has(base) ? base : null
+    if (plain === null && FACE_SUFFIXES.filter((s) => have.has(base + s)).length < 2) continue
+
+    const top = face('_top') ?? face('_end') ?? plain
+    const side = face('_side') ?? plain ?? top
+    const bottom = face('_bottom') ?? face('_end') ?? plain ?? top
+
+    specs[`minecraft:${base}`] = {
+      top: top ?? side,
+      bottom: bottom ?? side,
+      side,
+      // No spec said how this one is drawn, so the baker reads it off the
+      // texture's own transparency.
+      auto: true
+    }
+  }
+
+  // Doors, trapdoors and bars are the shapes that break the rule above: the
+  // pack draws the block's own face rather than a picture of the whole thing,
+  // which is exactly what the curated wooden doors already use.
+  for (const name of textureNames) {
+    if (name.endsWith('_door_bottom')) {
+      const door = name.slice(0, -'_bottom'.length)
+      specs[`minecraft:${door}`] = { all: name, auto: true }
+      if (have.has(`${door}_top`)) {
+        specs[`minecraft:${door}[half=upper]`] = { all: `${door}_top`, auto: true }
+      }
+    } else if (name.endsWith('_trapdoor') || name.endsWith('_bars')) {
+      specs[`minecraft:${name}`] = { all: name, auto: true }
+    }
+  }
+
+  return specs
+}
+
 /** Biome tints, as the game applies them to greyscale textures. */
 export const TINTS = {
   grass: 0x91bd59,
   foliage: 0x77ab2f,
   spruce: 0x619961,
   birch: 0x80a755,
-  water: 0x3f76e4
+  water: 0x3f76e4,
+  /**
+   * Dead and dried plants: leaf litter and the dry grasses, which the game
+   * colours from the biome's dry foliage rather than its foliage. This is the
+   * default the game falls back to, and the one knob to turn if the litter on
+   * a plot reads too green or too brown.
+   */
+  dryFoliage: 0xada373
 }
 
 /** Woods that follow the log/planks/leaves convention exactly. */
@@ -158,6 +257,20 @@ const OVERRIDES = {
   'vine': { all: 'vine', tint: { all: TINTS.foliage }, render: CUTOUT },
   'lily_pad': { all: 'lily_pad', tint: { all: TINTS.foliage }, render: CUTOUT },
   'sweet_berry_bush': { all: 'sweet_berry_bush_stage3', render: CUTOUT },
+
+  // The plants the game colours itself. A pack that paints them in keeps its
+  // own colours: the tint is only applied to a texture left greyscale for the
+  // game to tint, which is what these are in most packs.
+  'bush': { all: 'bush', tint: { all: TINTS.foliage }, render: CUTOUT },
+  'leaf_litter': { all: 'leaf_litter', tint: { all: TINTS.dryFoliage }, render: CUTOUT },
+  'short_dry_grass': { all: 'short_dry_grass', tint: { all: TINTS.dryFoliage }, render: CUTOUT },
+  'tall_dry_grass': { all: 'tall_dry_grass', tint: { all: TINTS.dryFoliage }, render: CUTOUT },
+  'tall_seagrass': { all: 'tall_seagrass_bottom', tint: { all: TINTS.grass }, render: CUTOUT },
+  'tall_seagrass[half=upper]': {
+    all: 'tall_seagrass_top',
+    tint: { all: TINTS.grass },
+    render: CUTOUT
+  },
   'nether_wart': { all: 'nether_wart_stage2', render: CUTOUT },
   'wheat': { all: ['wheat_stage7', 'wheat_stage_full_5', 'wheat_stage6'], render: CUTOUT },
   'carrots': { all: 'carrots_stage3', render: CUTOUT },
