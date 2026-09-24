@@ -55,6 +55,12 @@ ColorManagement.enabled = true
 const DEPTH_SHADE = 0.28
 
 /**
+ * Stand-in geometry for a collar that has nothing to draw, so a mesh never
+ * holds a geometry it does not own and disposal stays the cache's business.
+ */
+const EMPTY_GEOMETRY = new BufferGeometry()
+
+/**
  * The block the ground between the plots is made of.
  *
  * Plain and pale, so the plaza reads as a surface the plots stand on rather
@@ -353,6 +359,9 @@ interface ColumnData {
   occupiedHeight: number
   surfaceLevel: number
   minY: number
+  /** Footprint in blocks, which decides whether this plot needs a collar. */
+  sizeX: number
+  sizeZ: number
 }
 
 /** One drawn copy of a plot. The lattice repeats, so a plot has many. */
@@ -361,6 +370,14 @@ interface Instance {
   uuid: string | null
   /** World y this copy sits at when nothing is lifting it. */
   restY: number
+  /**
+   * The plaza that fills this cell in around a plot narrower than it.
+   *
+   * Part of the ground rather than of the plot: it stays where it is while the
+   * plot it wraps is lifted on hover or flown out on a focus, because what it
+   * is standing in for is floor.
+   */
+  collar: Mesh
 }
 
 /** A lattice cell resolved to the player who should be drawn in it. */
@@ -504,6 +521,12 @@ export class PlotRenderer {
   private floorPatch: Mesh
   private shaftPatch: Mesh
   private patchCells = 0
+  /**
+   * Collar geometry per plot footprint, shared by every drawn copy of it the
+   * way column geometry is. Dropped whenever the cell or the shaft depth
+   * changes, since both are baked into it.
+   */
+  private collarGeometries = new Map<string, BufferGeometry>()
   /**
    * Whether any plot has arrived yet.
    *
@@ -803,6 +826,7 @@ export class PlotRenderer {
     this.spacing = spacing
     this.columnWidth = columnWidth
     this.patchCells = 0
+    this.dropCollars()
     this.rebuildGround()
   }
 
@@ -884,12 +908,16 @@ export class PlotRenderer {
       existing.occupiedHeight = mesh.occupiedHeight
       existing.surfaceLevel = mesh.surfaceLevel
       existing.minY = mesh.minY
+      existing.sizeX = mesh.sizeX
+      existing.sizeZ = mesh.sizeZ
     } else {
       this.columns.set(uuid, {
         geometry,
         occupiedHeight: mesh.occupiedHeight,
         surfaceLevel: mesh.surfaceLevel,
-        minY: mesh.minY
+        minY: mesh.minY,
+        sizeX: mesh.sizeX,
+        sizeZ: mesh.sizeZ
       })
     }
 
@@ -957,6 +985,38 @@ export class PlotRenderer {
     return this.renderer.info.memory.geometries
   }
 
+  /** How deep the shafts are cut, measured down from the floor surface. */
+  private shaftDepth(): number {
+    return Math.max(this.floorY + 4, 8)
+  }
+
+  /** Throws away collars baked against a cell or a depth that has changed. */
+  private dropCollars(): void {
+    for (const geometry of this.collarGeometries.values()) geometry.dispose()
+    this.collarGeometries.clear()
+    for (const instance of this.instances) {
+      instance.collar.geometry = EMPTY_GEOMETRY
+      instance.collar.visible = false
+    }
+  }
+
+  /**
+   * The collar for a footprint, built once and shared by every copy of it.
+   * Null when the plot fills its cell and there is nothing to fill in.
+   */
+  private collarFor(sizeX: number, sizeZ: number): BufferGeometry | null {
+    if (sizeX >= this.columnWidth && sizeZ >= this.columnWidth) return null
+
+    const key = `${sizeX}x${sizeZ}`
+    const cached = this.collarGeometries.get(key)
+    if (cached) return cached
+
+    const geometry = buildCollarGeometry(sizeX, sizeZ, this.columnWidth, this.shaftDepth())
+    if (!geometry) return null
+    this.collarGeometries.set(key, geometry)
+    return geometry
+  }
+
   /** Places every drawn copy of the lattice for this frame. */
   syncPlots(slots: RenderSlot[]): void {
     if (this.disposed) return
@@ -970,7 +1030,14 @@ export class PlotRenderer {
       mesh.customDepthMaterial = this.changeDepth
       mesh.visible = false
       this.scene.add(mesh)
-      this.instances.push({ mesh, uuid: null, restY: 0 })
+
+      // Ground, so it takes shadow and casts none of its own.
+      const collar = new Mesh(EMPTY_GEOMETRY, [this.floorMaterial, this.shaftMaterial])
+      collar.receiveShadow = true
+      collar.visible = false
+      this.scene.add(collar)
+
+      this.instances.push({ mesh, uuid: null, restY: 0, collar })
     }
 
     for (let i = 0; i < this.instances.length; i++) {
@@ -981,6 +1048,7 @@ export class PlotRenderer {
       if (!slot || !column) {
         instance.uuid = null
         instance.mesh.visible = false
+        instance.collar.visible = false
         continue
       }
 
@@ -990,6 +1058,16 @@ export class PlotRenderer {
       instance.restY = column.minY - (this.baseMinY ?? column.minY)
       instance.mesh.position.set(slot.x, instance.restY, slot.z)
       instance.mesh.rotation.y = (slot.turn ?? 0) * (Math.PI / 2)
+
+      // Turned with the plot, so a footprint that is not square keeps its
+      // collar hugging it whichever way round the cell has stood it.
+      const collar = this.collarFor(column.sizeX, column.sizeZ)
+      instance.collar.visible = collar !== null && this.hasColumns
+      if (collar) {
+        if (instance.collar.geometry !== collar) instance.collar.geometry = collar
+        instance.collar.position.set(slot.x, this.floorY, slot.z)
+        instance.collar.rotation.y = instance.mesh.rotation.y
+      }
     }
   }
 
@@ -1248,6 +1326,7 @@ export class PlotRenderer {
     )
     this.shaftPatch.geometry.dispose()
     this.shaftPatch.geometry = shafts
+    this.dropCollars()
 
     this.positionGround()
     this.invalidate()
@@ -1620,8 +1699,13 @@ export class PlotRenderer {
     this.shaftPatch.visible = false
     const glinting = this.glintMesh.visible
     this.glintMesh.visible = false
+    const collared: Instance[] = []
     for (const instance of this.instances) {
       if (instance.mesh !== hero) instance.mesh.visible = false
+      if (instance.collar.visible) {
+        collared.push(instance)
+        instance.collar.visible = false
+      }
     }
 
     this.renderer.render(this.scene, this.camera)
@@ -1630,6 +1714,7 @@ export class PlotRenderer {
     this.floorPatch.visible = this.hasColumns
     this.shaftPatch.visible = this.hasColumns
     this.glintMesh.visible = glinting
+    for (const instance of collared) instance.collar.visible = true
     // Placement keeps a copy visible exactly while it has a player in it.
     for (const instance of this.instances) instance.mesh.visible = instance.uuid !== null
   }
@@ -1658,6 +1743,9 @@ export class PlotRenderer {
     this.scene.remove(this.shaftPatch)
     this.floorPatch.geometry.dispose()
     this.shaftPatch.geometry.dispose()
+    for (const instance of this.instances) this.scene.remove(instance.collar)
+    for (const geometry of this.collarGeometries.values()) geometry.dispose()
+    this.collarGeometries.clear()
 
     this.material.dispose()
     this.changeDepth.dispose()
@@ -2231,6 +2319,109 @@ function buildShaftPatch(
   geometry.setAttribute('color', new Float32BufferAttribute(colours, 3))
   geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2))
   geometry.setIndex(indices)
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/**
+ * The ring of plaza that fills a cell's hole in around a plot narrower than the
+ * cell it stands in.
+ *
+ * Plot size is a server setting and a board can hold a mix of sizes, so cells
+ * are cut to the widest plot on the board. A narrower plot standing in one
+ * would otherwise be ringed by void: the hole is the wide plot's, and there is
+ * nothing between its edge and the plot's own. This is the floor that belongs
+ * in that ring - the plaza carried inwards to the plot's real edge, with the
+ * shaft wall dropping there instead of at the cell boundary.
+ *
+ * It travels with the plot rather than being cut into the ground patch. The
+ * patch is identical in every cell, which is what lets the whole ground be slid
+ * by the scroll instead of rebuilt; holes of differing sizes would end that,
+ * because which plot stands in which cell changes as the board scrolls.
+ *
+ * Built about the origin like the column it wraps, so a plot that is turned
+ * carries its collar round with it. Two groups: the top face is plaza, the
+ * inner walls are shaft, shaded with depth exactly as the patch's are.
+ *
+ * @returns null when the plot fills its cell, which is every plot on a board
+ *     whose plots are all one size
+ */
+export function buildCollarGeometry(
+  plotSizeX: number,
+  plotSizeZ: number,
+  holeWidth: number,
+  depth: number
+): BufferGeometry | null {
+  const outer = holeWidth / 2
+  // A plot wider than the hole is not this function's problem to solve: it
+  // overhangs, and clamping here keeps the collar from turning inside out.
+  const innerX = Math.min(plotSizeX, holeWidth) / 2
+  const innerZ = Math.min(plotSizeZ, holeWidth) / 2
+  if (outer - innerX < 1e-6 && outer - innerZ < 1e-6) return null
+
+  const positions: number[] = []
+  const normals: number[] = []
+  const colours: number[] = []
+  const uvs: number[] = []
+  const indices: number[] = []
+
+  const top = (x0: number, z0: number, x1: number, z1: number) => {
+    if (x1 - x0 <= 1e-6 || z1 - z0 <= 1e-6) return
+    const base = positions.length / 3
+    positions.push(x0, 0, z0, x1, 0, z0, x1, 0, z1, x0, 0, z1)
+    for (let i = 0; i < 4; i++) {
+      normals.push(0, 1, 0)
+      colours.push(1, 1, 1)
+    }
+    // In blocks and in the plot's own frame, so the collar's grid lines up with
+    // the plaza it continues at the seam.
+    uvs.push(x0, z0, x1, z0, x1, z1, x0, z1)
+    indices.push(base, base + 2, base + 1, base, base + 3, base + 2)
+  }
+
+  // Four strips, laid the way the patch lays the floor around its own hole.
+  top(-outer, -outer, outer, -innerZ)
+  top(-outer, innerZ, outer, outer)
+  top(-outer, -innerZ, -innerX, innerZ)
+  top(innerX, -innerZ, outer, innerZ)
+
+  const topIndices = indices.length
+
+  const wall = (
+    ax: number, az: number,
+    bx: number, bz: number,
+    nx: number, nz: number
+  ) => {
+    const base = positions.length / 3
+    positions.push(ax, 0, az, bx, 0, bz, bx, -depth, bz, ax, -depth, az)
+    const run = Math.hypot(bx - ax, bz - az)
+    for (let i = 0; i < 4; i++) normals.push(nx, 0, nz)
+    uvs.push(0, 0, run, 0, run, depth, 0, depth)
+    // Less and less of the sky reaches the bottom of a shaft, the same falloff
+    // the patch's walls carry, so the two read as one recess.
+    colours.push(
+      1, 1, 1,
+      1, 1, 1,
+      DEPTH_SHADE, DEPTH_SHADE, DEPTH_SHADE,
+      DEPTH_SHADE, DEPTH_SHADE, DEPTH_SHADE
+    )
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  }
+
+  // Normals face in towards the plot, which is the only side ever seen.
+  wall(-innerX, -innerZ, innerX, -innerZ, 0, 1)
+  wall(innerX, innerZ, -innerX, innerZ, 0, -1)
+  wall(-innerX, innerZ, -innerX, -innerZ, 1, 0)
+  wall(innerX, -innerZ, innerX, innerZ, -1, 0)
+
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('color', new Float32BufferAttribute(colours, 3))
+  geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.addGroup(0, topIndices, 0)
+  geometry.addGroup(topIndices, indices.length - topIndices, 1)
   geometry.computeBoundingSphere()
   return geometry
 }
