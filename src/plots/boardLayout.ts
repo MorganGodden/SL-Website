@@ -20,11 +20,26 @@ export const PLOT_GAP = 2
 export const SCROLL_DIRECTION = { x: 1, z: 0 } as const
 
 /**
- * How much a floor-plane step towards the top of the screen is foreshortened
- * by the camera's tilt. The camera's screen-right is (1, 0, -1)/sqrt(2) and its
- * screen-up is (-1, 2, -1)/sqrt(6), which works out at sqrt(3).
+ * How high the camera stands over the board, in radians.
+ *
+ * Lower than isometric on purpose. A flatter camera puts more of the plaza on
+ * screen for the same view height, which is what gives the board its distance
+ * and what the depth of field has to work with; the isometric 35.26 degrees -
+ * the angle you get looking down (1, 1, 1) - showed barely two plots of it.
+ * Half way between that and the 20 degrees this was first tried at: any flatter
+ * and the plots flatten into ribbons and start hiding one another.
  */
-export const SCREEN_UP_ON_FLOOR = Math.sqrt(3)
+export const CAMERA_ELEVATION = (27.5 * Math.PI) / 180
+
+/**
+ * How much a floor-plane step towards the top of the screen is foreshortened
+ * by that tilt.
+ *
+ * Everything that turns a screen measurement into a world one goes through
+ * this, so the camera and the lattice cannot drift apart: change the elevation
+ * and the drag, the cull margin and the focus framing all follow.
+ */
+export const SCREEN_UP_ON_FLOOR = 1 / Math.sin(CAMERA_ELEVATION)
 
 /** A displacement on the floor plane. */
 export interface WorldDelta {

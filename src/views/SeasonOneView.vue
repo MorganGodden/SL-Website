@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import LeaderboardOverlay from '@/components/season1/leaderboardOverlay.vue'
 import PlotScene from '@/components/season1/plotScene.vue'
 import { getLeaderboard } from '@/data/leaderboardService'
@@ -33,6 +34,21 @@ const leaderboardExpanded = ref(true)
  */
 let collapsedByBoard = false
 
+const route = useRoute()
+const router = useRouter()
+/**
+ * The plot a shared link asks for, held until the board has it.
+ *
+ * Plots arrive by poll, so a link opened cold names a plot the board cannot
+ * show for a second or two. It is dropped the moment anything else takes the
+ * stage: by then the link has been overtaken.
+ */
+let pendingLink = typeof route.query.plot === 'string' ? route.query.plot : null
+
+watch(plotted, () => {
+  if (pendingLink && scene.value?.focusPlayer(pendingLink)) pendingLink = null
+})
+
 function foldLeaderboard(): void {
   if (!leaderboardExpanded.value) return
   collapsedByBoard = true
@@ -57,9 +73,15 @@ watch(leaderboardExpanded, (open) => {
  * from a leaderboard row arrives here too, so the row that chose it folds the
  * panel away just as a click on the board would.
  */
-function onBoardFocus(focused: boolean): void {
-  if (focused) foldLeaderboard()
+function onBoardFocus(target: { uuid: string; name: string } | null): void {
+  pendingLink = null
+  if (target) foldLeaderboard()
   else restoreLeaderboard()
+  // The link names the player rather than the cell: the board is a lattice that
+  // has drifted since, and the plot is what was being pointed at anyway.
+  // Replaced rather than pushed - picking through a dozen plots should not bury
+  // the way off the page under a dozen history entries.
+  void router.replace({ query: { ...route.query, plot: target?.name } })
 }
 
 getLeaderboard('s1')

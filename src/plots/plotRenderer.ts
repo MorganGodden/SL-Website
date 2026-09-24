@@ -7,15 +7,18 @@ import {
   CanvasTexture,
   Color,
   ColorManagement,
+  DepthTexture,
   DirectionalLight,
   DoubleSide,
   EquirectangularReflectionMapping,
   Float32BufferAttribute,
+  HalfFloatType,
   Mesh,
-  MeshBasicMaterial,
+  MeshDepthMaterial,
   MeshStandardMaterial,
   NearestFilter,
   NearestMipmapLinearFilter,
+  NoBlending,
   OrthographicCamera,
   PCFShadowMap,
   PMREMGenerator,
@@ -28,12 +31,13 @@ import {
   TextureLoader,
   Vector2,
   Vector3,
+  WebGLRenderTarget,
   WebGLRenderer,
   type Texture
 } from 'three'
 import atlasUrl from '@/assets/textures/blocks.png'
 import { faceTilesForEntry, tilePixelRect } from './blockAtlas'
-import { SCREEN_UP_ON_FLOOR, wrapDistance } from './boardLayout'
+import { CAMERA_ELEVATION, SCREEN_UP_ON_FLOOR, wrapDistance } from './boardLayout'
 import { CHANGE_SECONDS, type ColumnMesh } from './mesher'
 
 // The scene is lit, so colours must be managed: block colours are authored in
@@ -61,15 +65,37 @@ const GROUND_BLOCK = 'minecraft:white_concrete'
 const CUTOUT_ALPHA = 0.5
 
 /**
- * How far a focused plot is blown up, and how far towards the camera it comes
- * as a fraction of the view height.
+ * How much room is left around a plot the camera has come in on.
  *
- * The camera is orthographic, so coming forward does not enlarge anything by
- * itself; it is what puts the plot in front of the whole board, and the scale
- * is what makes it read as having stepped towards the viewer.
+ * Nothing moves the plot for a focus: the camera goes to it, and this is the
+ * only thing deciding how much of the screen it ends up filling.
  */
-const FOCUS_SCALE = 1.45
-const FOCUS_FORWARD = 2
+const FOCUS_MARGIN = 1.24
+
+/** Which way is up, for turning the camera about a plot it has come in on. */
+const SPIN_AXIS = new Vector3(0, 1, 0)
+
+/**
+ * Where the camera stands, as a unit vector: half way between the x and z axes
+ * so plots meet edge on, at the elevation the lattice is laid out for.
+ */
+const CAMERA_DIRECTION = new Vector3(
+  Math.cos(CAMERA_ELEVATION) / Math.SQRT2,
+  Math.sin(CAMERA_ELEVATION),
+  Math.cos(CAMERA_ELEVATION) / Math.SQRT2
+)
+
+/**
+ * How much of a world distance survives going up the screen, across the floor
+ * and straight up.
+ *
+ * Two of them, because the camera looks down on the board: a step across the
+ * plaza is squashed harder than a block of height is. Both follow from the one
+ * angle the lattice already names, which is the distance across the floor that
+ * one unit up the screen covers.
+ */
+const FLOOR_UP = 1 / SCREEN_UP_ON_FLOOR
+const HEIGHT_UP = Math.sqrt(1 - FLOOR_UP * FLOOR_UP)
 
 /**
  * World units across one tile of the glint pattern, and how fast the two layers
@@ -93,13 +119,108 @@ const GLINT_SHEEN = 0.08
 const GLINT_BASE = 0.05
 
 /**
- * How dark the focused plot's shadow is, and how much of its footprint it
- * covers.
+ * The depth of field, in world units either side of whatever the camera is
+ * looking at, and the widest the blur is allowed to get in CSS pixels.
  *
- * A contact shadow: enough to lift the plot off the backdrop and no more.
+ * An orthographic camera at isometric angles turns a plane of focus into a
+ * diagonal band across the screen, which is what a tilt-shift lens does to a
+ * real scene and why a board shot this way reads as a model of itself.
  */
-const SHADOW_STRENGTH = 0.32
-const SHADOW_SPREAD = 0.9
+const DOF_RANGE = 26
+const DOF_RADIUS = 5.5
+/** Taps in the blur. Enough for a smooth disc at that radius. */
+const DOF_TAPS = 12
+
+/** The sky the board is lit by: cool overhead, pale down at the horizon. */
+const SKY_ZENITH = '#9fc4f0'
+const SKY_HORIZON = '#dcebff'
+
+/**
+ * The same sky as a backdrop, authored deeper than it is meant to look.
+ *
+ * The lens pass is the only thing now drawing to the canvas, so everything goes
+ * through the tone mapping it applies - including a backdrop that is not lit
+ * and has no business being tone mapped at all. ACES lifts and desaturates it:
+ * the zenith above comes out of it as #becfdf, a grey haze rather than a sky.
+ * These are those colours wound back so that what lands on the screen is the
+ * sky overhead, and no horizon, because a plot on the stage is not standing on
+ * anything for a horizon to be behind.
+ */
+const BACKDROP_TOP = new Color('#4e8fdc')
+const BACKDROP_BOTTOM = new Color('#76b5ff')
+
+/**
+ * How much of the board is left standing behind a focused plot, and how far
+ * around that plot it is cleared away entirely.
+ *
+ * The far board does not go: it dims to a ghost of itself, which is what keeps
+ * the plot somewhere rather than nowhere. What does go is the plaza immediately
+ * around it, which at this range would otherwise be close enough to be mistaken
+ * for part of it.
+ *
+ * The radius is measured in the camera's own plane rather than along the floor.
+ * Flattened to match the plaza it would be a good deal shorter going up the
+ * screen than across it - shorter, in fact, than the plot standing in the
+ * middle of it is tall - and the whole gradient would play out behind the very
+ * thing it is meant to be clearing a space around.
+ */
+const BOARD_REMAINS = 0.2
+const CLEARING_BLOCKS = 24
+
+/**
+ * How much of that clearing is swept completely clean before the fade starts.
+ *
+ * The plot on the stage is about thirteen blocks from its middle to its corner
+ * whichever way you measure, and it is standing in the middle of the clearing
+ * hiding it. A fade that starts at the middle is therefore nearly half over by
+ * the time there is any sky to see it in, and what is left reads as a flat
+ * haze. Starting it at the plot's own edge puts the whole of the fade where it
+ * can be seen: clean sky against the block, full ghost by the far edge.
+ */
+const CLEARING_CLEAN = 13
+
+/**
+ * How far the board has washed out before it stops covering the focused plot.
+ *
+ * Early, and for the plot's sake rather than the board's. Whenever the board
+ * lets go there is a seam - something that was covered stops being covered -
+ * and the size of it is however much of the plot had faded in by then. Let go
+ * while the fade has barely started and there is little to see; hang on until
+ * the board has gone and the whole side of the block arrives at once.
+ */
+const OCCLUDE_UNTIL = 0.3
+
+/**
+ * How far the board has washed out by the time the plot is solid.
+ *
+ * The fade begins the instant the wash does - the plot opens up as the board
+ * goes, rather than waiting for it to get out of the way first - and finishes
+ * short of the end of it. Short on purpose: the wash only ever approaches 1,
+ * so a fade tied to the very end would still be running while the plot sat
+ * there looking finished, and the block would keep a faint translucency for as
+ * long as anyone cared to look at it.
+ */
+const REVEAL_END = 0.92
+
+/**
+ * How much of the column the fade leaves alone at the top.
+ *
+ * A plot sits flush in the plaza: the layer making up its surface is the one
+ * directly beneath the floor plane, not above it. Measured from the plane
+ * itself the fade would take that surface with it, and the one thing on screen
+ * that was already there would dim as everything else did. So it starts a block
+ * lower down, under the ground you can already see.
+ */
+const REVEAL_SURFACE = 1
+
+/**
+ * How the fade is spread down the block.
+ *
+ * At 2 the top of the buried half is solid by the time the reveal is half done
+ * and the foot arrives exactly at the end, which puts a soft gradient the whole
+ * height of the block rather than an edge travelling down it.
+ */
+const REVEAL_SPREAD = 2.0
 
 /** The two ends of the glint's colour ramp, in sRGB. */
 const GLINT_DARK = new Color(0x6d3ad6)
@@ -118,11 +239,20 @@ const GLINT_LIGHT = new Color(0xc9a6f7)
  * that faded would have to be drawn in the blended pass with everything that
  * implies.
  */
-function animateChanges(material: MeshStandardMaterial, clock: { value: number }): void {
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uNow = clock
+/**
+ * The vertex half of the change animation.
+ *
+ * Shared, because the shadow pass has to move a block exactly as the lit pass
+ * does. A block that shrank away in one and stood still in the other would go
+ * on casting the shadow of something that is no longer there.
+ */
+function patchChangeVertex(
+  shader: { vertexShader: string; uniforms: Record<string, { value: unknown }> },
+  clock: { value: number }
+): void {
+  shader.uniforms.uNow = clock
 
-    shader.vertexShader = shader.vertexShader
+  shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
@@ -156,6 +286,14 @@ function animateChanges(material: MeshStandardMaterial, clock: { value: number }
           }
         }`
       )
+}
+
+/**
+ * Grows a block into place as it appears, and shrinks it away as it goes.
+ */
+function animateChanges(material: MeshStandardMaterial, clock: { value: number }): void {
+  material.onBeforeCompile = (shader) => {
+    patchChangeVertex(shader, clock)
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n        varying float vChange;`)
@@ -169,6 +307,38 @@ function animateChanges(material: MeshStandardMaterial, clock: { value: number }
   // Two materials sharing one patch still compile to two programs, and three
   // keys its cache on the source; this keeps them from colliding.
   material.customProgramCacheKey = () => 'plot-changes'
+}
+
+/**
+ * The same animation again, for the shadow the block casts while it runs.
+ *
+ * Without this a plot keeps the shadows of whatever has just been cut off it:
+ * the layer that has gone is still in the geometry - it has to be, to be
+ * animated out at all - and the shadow pass, which knows nothing about the
+ * fade, goes on drawing it at full size for ever.
+ *
+ * A block being grown or shrunk is collapsed towards its own middle by the
+ * shared vertex patch, and vanishes from the shadow of its own accord. A whole
+ * layer only fades, which a depth pass cannot do, so it is dropped outright
+ * once it is more gone than not.
+ */
+function buildChangeDepthMaterial(clock: { value: number }): MeshDepthMaterial {
+  const material = new MeshDepthMaterial()
+
+  material.onBeforeCompile = (shader) => {
+    patchChangeVertex(shader, clock)
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n        varying float vChange;`)
+      .replace(
+        '#include <alphatest_fragment>',
+        `#include <alphatest_fragment>
+        if (vChange < 0.5) discard;`
+      )
+  }
+
+  material.customProgramCacheKey = () => 'plot-changes-depth'
+  return material
 }
 
 /** One player's decoded geometry, drawn at however many places it appears. */
@@ -226,6 +396,13 @@ export class PlotRenderer {
    * which is what lets every plot animate without a uniform of its own.
    */
   private changeClock = { value: 0 }
+  /**
+   * The depth material every column casts its shadow through.
+   *
+   * One for the whole board: it carries no state of its own beyond the clock,
+   * which every plot is already reading from.
+   */
+  private changeDepth = buildChangeDepthMaterial(this.changeClock)
   /** When the last block animation on the board will have finished. */
   private changesUntil = 0
 
@@ -247,14 +424,22 @@ export class PlotRenderer {
    */
   private veilScene = new Scene()
   private veilCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1)
-  private veilMaterial: MeshBasicMaterial
-  /** The ground block again, tiled flat across the screen behind a plot. */
-  private veilTexture: Texture | null = null
+  private veilMaterial: ShaderMaterial
   private veilPane: Mesh
-  /** The shadow the focused plot lays on that backdrop. */
-  private shadowMaterial: MeshBasicMaterial
-  private shadowPane: Mesh
+  /** Scratch vector for putting the focused plot's middle on screen. */
+  private veilFocus = new Vector3()
   private veil = 0
+
+  /**
+   * The whole picture drawn off screen, with the depth it was drawn at, so it
+   * can be put through a lens on its way to the canvas.
+   */
+  private sceneTarget: WebGLRenderTarget
+  private dofScene = new Scene()
+  private dofMaterial: ShaderMaterial
+  private dofQuad: Mesh
+  /** Scratch vector for the drawing buffer's size, read on every resize. */
+  private bufferSize = new Vector2()
 
   private focusedMesh: Mesh | null = null
   /**
@@ -264,13 +449,32 @@ export class PlotRenderer {
    * copy of that player on the board is still standing whole.
    */
   private focusGeometry: BufferGeometry | null = null
-  /** Quarter turns and then some: how far the focused plot has been spun. */
+  /** Quarter turns and then some: how far the camera has been swung round it. */
   private focusSpin = 0
-  /** Scratch vector for the focus pose, so a held focus allocates nothing. */
-  private focusPoint = new Vector3()
-  /** Scratch vectors for placing the shadow under it. */
-  private shadowAt = new Vector3()
-  private shadowEdge = new Vector3()
+  /** How far the camera has got between the board and one plot, 0 to 1. */
+  private focusEase = 0
+  /** The middle of the plot it is going to, and the height it frames it at. */
+  private focusCentre = new Vector3()
+  private focusHeight = 0
+  /**
+   * How far the focused plot has faded in, and the two heights that fade spans.
+   *
+   * Uniform objects rather than numbers, so the materials below read them
+   * straight out and nothing has to be pushed per frame.
+   */
+  private revealAmount = { value: 0 }
+  private revealTop = { value: 0 }
+  private revealFoot = { value: 0 }
+  private revealing = false
+
+  /**
+   * The block materials again, transparent and carrying that fade.
+   *
+   * Their own copies because the board is drawn with the originals and must
+   * stay opaque: these are lent to the one plot on the stage and taken back
+   * when it is done with them.
+   */
+  private revealMaterials: MeshStandardMaterial[] = []
 
   /**
    * An additive second pass over the hovered plot, drawn from that plot's own
@@ -322,6 +526,14 @@ export class PlotRenderer {
   private baseHeight = 100
   private zoom = 1
   private target = new Vector3(0, 0, 0)
+  /**
+   * Where the camera looks when no plot has been picked.
+   *
+   * Kept apart from `target`, which is wherever the camera has got to on its
+   * way in to a plot: the lattice, the ground patch and the shadow map are all
+   * cut for the board, and must not be re-cut on every frame of a focus.
+   */
+  private boardTarget = new Vector3(0, 0, 0)
 
   private spacing = 20
   private columnWidth = 16
@@ -384,39 +596,31 @@ export class PlotRenderer {
     animateChanges(this.blendedMaterial, this.changeClock)
     animateChanges(this.fadeMaterial, this.changeClock)
 
-    this.veilMaterial = new MeshBasicMaterial({
-      // The ground block's own colour, taken down a touch: the plot on the
-      // stage is lit and the backdrop is not, and at full strength the two read
-      // as the same brightness.
-      color: new Color(0xe2e5e8),
-      transparent: true,
-      opacity: 0,
-      // It is the pane, not part of the scene: nothing occludes it and it
-      // occludes nothing, and black is black whatever the exposure.
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false
-    })
+    this.revealMaterials = [this.material, this.blendedMaterial, this.fadeMaterial].map(
+      (source) => this.buildRevealMaterial(source)
+    )
+
+    this.veilMaterial = buildVeilMaterial()
     this.veilPane = new Mesh(new PlaneGeometry(2, 2), this.veilMaterial)
     this.veilPane.frustumCulled = false
     this.veilScene.add(this.veilPane)
 
-    // A soft shadow on the backdrop, under the plot that is standing on it.
-    // Drawn here rather than cast by the sun, because there is no floor left
-    // in the scene for a real shadow to fall on.
-    this.shadowMaterial = new MeshBasicMaterial({
-      color: new Color(0x0b1020),
-      map: buildShadowTexture(),
-      transparent: true,
-      opacity: 0,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false
+    // Half float, because the board is drawn into this before it is tone
+    // mapped: three only tone maps what goes straight to the canvas, so the
+    // buffer holds open-ended light and the lens pass brings it down at the end.
+    const buffer = this.renderer.getDrawingBufferSize(this.bufferSize)
+    this.sceneTarget = new WebGLRenderTarget(buffer.x, buffer.y, {
+      type: HalfFloatType,
+      samples: 4,
+      depthTexture: new DepthTexture(buffer.x, buffer.y)
     })
-    this.shadowPane = new Mesh(new PlaneGeometry(1, 1), this.shadowMaterial)
-    this.shadowPane.frustumCulled = false
-    this.shadowPane.renderOrder = 1
-    this.veilScene.add(this.shadowPane)
+
+    this.dofMaterial = buildDofMaterial()
+    this.dofMaterial.uniforms.tColour.value = this.sceneTarget.texture
+    this.dofMaterial.uniforms.tDepth.value = this.sceneTarget.depthTexture
+    this.dofQuad = new Mesh(new PlaneGeometry(2, 2), this.dofMaterial)
+    this.dofQuad.frustumCulled = false
+    this.dofScene.add(this.dofQuad)
 
     // Every pass is drawn into the same buffer, so clearing is done once, by
     // hand, at the top of the frame.
@@ -491,7 +695,14 @@ export class PlotRenderer {
         texture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy())
 
         this.atlas = texture
-        for (const material of [this.material, this.blendedMaterial, this.fadeMaterial]) {
+        // The reveal copies are cloned before this arrives, so they are named
+        // here too: left out, a plot on the stage comes in untextured and white.
+        for (const material of [
+          this.material,
+          this.blendedMaterial,
+          this.fadeMaterial,
+          ...this.revealMaterials
+        ]) {
           material.map = texture
           material.needsUpdate = true
         }
@@ -502,16 +713,6 @@ export class PlotRenderer {
         // of the same atlas rather than being invented here.
         this.groundTexture = buildGroundTexture(texture.image)
         if (this.groundTexture) {
-          // A plot on the stage stands against the same block the plaza is
-          // paved with, laid flat and tiled across the screen. Its own copy of
-          // the texture, because the two tile at very different rates and the
-          // rate belongs to the texture rather than to the material.
-          this.veilTexture = this.groundTexture.clone()
-          this.veilTexture.needsUpdate = true
-          this.veilMaterial.map = this.veilTexture
-          this.veilMaterial.needsUpdate = true
-          this.tileVeil()
-
           this.groundTexture.anisotropy = Math.min(
             4,
             this.renderer.capabilities.getMaxAnisotropy()
@@ -545,8 +746,11 @@ export class PlotRenderer {
     this.sun.shadow.mapSize.set(2048, 2048)
     // Voxel faces are perfectly flat and axis-aligned, which makes them prone
     // to shadow acne; a normal-space offset avoids it without peter-panning.
-    this.sun.shadow.bias = -0.0004
-    this.sun.shadow.normalBias = 0.06
+    // A constant depth bias cannot: it is in normalised shadow depth, so the
+    // shadow camera's range scales it back up into world units and slides every
+    // shadow off the block casting it, leaving a lit sliver at the block's foot.
+    this.sun.shadow.bias = 0
+    // normalBias is set in fitShadowCamera, where the texel size is known.
     this.scene.add(this.sun)
     this.scene.add(this.sun.target)
 
@@ -567,8 +771,8 @@ export class PlotRenderer {
     if (!context) return null
 
     const gradient = context.createLinearGradient(0, 0, 0, 128)
-    gradient.addColorStop(0, '#9fc4f0') // zenith
-    gradient.addColorStop(0.46, '#dcebff') // sky near the horizon
+    gradient.addColorStop(0, SKY_ZENITH)
+    gradient.addColorStop(0.46, SKY_HORIZON) // sky near the horizon
     gradient.addColorStop(0.54, '#f2f6fa') // snow near the horizon
     gradient.addColorStop(1, '#c9d6e4') // ground bounce
     context.fillStyle = gradient
@@ -753,6 +957,9 @@ export class PlotRenderer {
       const mesh = new Mesh(undefined, [this.material, this.blendedMaterial, this.fadeMaterial])
       mesh.castShadow = true
       mesh.receiveShadow = true
+      // Cast through the animated depth material, so a block that has been cut
+      // away stops throwing a shadow as it goes rather than leaving one behind.
+      mesh.customDepthMaterial = this.changeDepth
       mesh.visible = false
       this.scene.add(mesh)
       this.instances.push({ mesh, uuid: null, restY: 0 })
@@ -796,15 +1003,20 @@ export class PlotRenderer {
   }
 
   /**
-   * Brings one drawn copy to the front and takes the rest of the board to
-   * black behind it, at `progress` between 0 (untouched) and 1 (fully focused).
+   * Brings the camera in on one drawn copy and washes the board out behind it,
+   * at `progress` between 0 (the board's own framing) and 1 (that plot filling
+   * the screen).
+   *
+   * The plot is not touched: it stays standing in its own cell and it is the
+   * camera that travels. `veil` is handed in apart from `progress` so that the
+   * board can be left to go a moment after the camera has set off, rather than
+   * dimming the instant something is clicked.
    *
    * Applied after placement and after the lift, and meant to be called every
    * frame for as long as a focus is in play: placement resets the pose each
    * frame, so the whole of the focus is expressed here rather than accumulated.
-   * The fade itself happens at drawing time, in one pass over everything.
    */
-  setFocus(index: number | null, progress: number): void {
+  setFocus(index: number | null, progress: number, veil: number): void {
     if (this.disposed) return
 
     const instance = index === null ? undefined : this.instances[index]
@@ -812,9 +1024,6 @@ export class PlotRenderer {
       instance && instance.uuid && instance.mesh.visible && progress > 0 ? instance : null
 
     if (this.focusedMesh !== (focused?.mesh ?? null)) {
-      // Placement resets position but not scale, so the copy that was focused
-      // has to be given its own size back.
-      this.focusedMesh?.scale.set(1, 1, 1)
       // A slice belongs to the plot it was cut from, and placement gives that
       // copy its own geometry back on the next frame.
       this.focusGeometry?.dispose()
@@ -822,40 +1031,54 @@ export class PlotRenderer {
       this.focusedMesh = focused?.mesh ?? null
     }
 
-    this.veil = focused ? progress : 0
-    if (!focused) return
+    this.veil = focused ? Math.min(Math.max(veil, 0), 1) : 0
+
+    if (!focused) {
+      this.revealing = false
+      if (this.focusEase !== 0) {
+        this.focusEase = 0
+        this.updateCamera()
+      }
+      return
+    }
 
     const column = this.columns.get(focused.uuid as string)
-    const height = Math.max(column?.occupiedHeight ?? this.spacing, 1)
-    // Tall builds are blown up less, so that a forty-block tower still fits on
-    // screen rather than running off both ends of it. Measured against the
-    // board's own framing rather than the zoomed view: fitting it to a view
-    // the visitor has zoomed in would shrink the plot by however much they had
-    // zoomed, and leave them where they started.
-    const full = Math.min(FOCUS_SCALE, (this.baseHeight * 1.5) / height)
-    const scale = 1 + (full - 1) * progress
+    const top = focused.restY + Math.max(column?.occupiedHeight ?? this.spacing, 1)
+    // The whole column, underground half included: by the time the board has
+    // gone the plot is a block of world standing on nothing, and the camera is
+    // framing the block rather than the part of it that clears the plaza.
+    const base = focused.restY
 
-    // Centred on the axis the camera is looking down, so the plot lands in the
-    // middle of the screen, and pulled along that axis towards the camera.
-    this.focusPoint
-      .copy(this.camera.position)
-      .sub(this.target)
-      .normalize()
-      .multiplyScalar(this.viewHeight * FOCUS_FORWARD)
-      .add(this.target)
-    // A column is placed by its base, so it is dropped by half its own height
-    // to put its middle, rather than its feet, in the centre of the view.
-    this.focusPoint.y -= (height * scale) / 2
+    const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1)
+    // The footprint is a square on the floor, which this camera shows corner
+    // on: its diagonal is what it measures across the screen, and that same
+    // diagonal, flattened, is most of what it measures up it.
+    const across = this.columnWidth * Math.SQRT2
+    const tall = (top - base) * HEIGHT_UP + across * FLOOR_UP
+    const fit = Math.max(tall / 2, across / (2 * aspect)) * FOCUS_MARGIN
 
-    focused.mesh.position.lerp(this.focusPoint, progress)
-    focused.mesh.scale.setScalar(scale)
+    // Never further out than the board's own framing. The ground patch and the
+    // lattice are cut for that, and a tower tall enough to want more would show
+    // the edge of both; it runs off the top here as it does on the board, and
+    // the slice control is there for anyone who wants the top of it back.
+    //
+    // Divided by the zoom like the board's own framing is, so that the wheel
+    // still works on a focused plot rather than being swallowed by a fit that
+    // never changes.
+    this.focusHeight = Math.min(fit / this.zoom, this.boardHeight)
+    this.focusCentre.set(focused.mesh.position.x, (base + top) / 2, focused.mesh.position.z)
 
-    this.layShadow(focused.mesh, scale)
-
-    // Placement has already turned this copy to sit in its cell, so the spin is
-    // added to that rather than replacing it: the plot turns from where it was
-    // standing, not from wherever the lattice happened to face it.
-    focused.mesh.rotation.y += this.focusSpin
+    // The surface and whatever stands on it are already on screen and stay
+    // solid; everything under them fades up from nothing, the top of it first.
+    const reveal = Math.min(this.veil / REVEAL_END, 1)
+    this.revealAmount.value = reveal
+    this.revealTop.value = this.floorY - REVEAL_SURFACE
+    this.revealFoot.value = Math.min(base, this.floorY) - 0.5
+    // Once it is all the way in there is nothing left to blend, and the plot is
+    // handed back its own opaque materials.
+    this.revealing = reveal < 1
+    this.focusEase = progress
+    this.updateCamera()
 
     // Slicing only ever shortens a plot, so the whole of the sliced mesh is
     // inside the bounding sphere three culls against; there is nothing to
@@ -863,9 +1086,77 @@ export class PlotRenderer {
     if (this.focusGeometry) focused.mesh.geometry = this.focusGeometry
   }
 
-  /** How far the focused plot has been spun about its own axis, in radians. */
+  /**
+   * One block material again, transparent, with the reveal fade patched in.
+   *
+   * The fade is applied after the cutout test rather than before it, so a leaf
+   * or a pane of bars is still punched through by its own texture while it is
+   * coming in: folded in earlier, a half-faded block would fail the cutout
+   * outright and blink out instead of fading.
+   */
+  private buildRevealMaterial(source: MeshStandardMaterial): MeshStandardMaterial {
+    const material = source.clone()
+    material.transparent = true
+
+    // A clone does not carry a patch, so the original's is put back on and this
+    // one is hung off the end of it.
+    animateChanges(material, this.changeClock)
+    const changes = material.onBeforeCompile
+
+    material.onBeforeCompile = (shader, renderer) => {
+      changes(shader, renderer)
+
+      shader.uniforms.uReveal = this.revealAmount
+      shader.uniforms.uRevealTop = this.revealTop
+      shader.uniforms.uRevealFoot = this.revealFoot
+
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+        varying float vRevealY;`)
+        .replace(
+          '#include <project_vertex>',
+          `vRevealY = (modelMatrix * vec4(transformed, 1.0)).y;
+          #include <project_vertex>`
+        )
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying float vRevealY;
+          uniform float uReveal;
+          uniform float uRevealTop;
+          uniform float uRevealFoot;`
+        )
+        .replace(
+          '#include <alphatest_fragment>',
+          `#include <alphatest_fragment>
+          // Nothing above the plaza is arriving: it was on screen already.
+          float revealSpan = max(uRevealTop - uRevealFoot, 0.001);
+          float revealDepth = clamp((uRevealTop - vRevealY) / revealSpan, 0.0, 1.0);
+          diffuseColor.a *= vRevealY >= uRevealTop
+            ? 1.0
+            : clamp(uReveal * ${REVEAL_SPREAD.toFixed(1)} - revealDepth, 0.0, 1.0);`
+        )
+    }
+
+    // A different program from the one the board is drawn with, so three does
+    // not hand this shader back for the opaque copies.
+    material.customProgramCacheKey = () => 'plot-reveal'
+    return material
+  }
+
+  /**
+   * How far the camera has been swung round the focused plot, in radians.
+   *
+   * The camera turns rather than the plot, because the plot is standing in a
+   * square hole: one spun in place would put its corners through the walls.
+   */
   setFocusSpin(radians: number): void {
+    if (this.disposed || this.focusSpin === radians) return
     this.focusSpin = radians
+    this.updateCamera()
+    this.invalidate()
   }
 
   /**
@@ -977,10 +1268,13 @@ export class PlotRenderer {
     const margin = this.spacing * 0.9
     // Only the top edge needs room for what is built on the plots.
     const build = Math.max(this.tallest - this.floorY, 0) * 1.25
-    const depth = this.viewHeight * Math.SQRT2 * SCREEN_UP_ON_FLOOR
+    // The board's own framing rather than the camera's: coming in on a plot
+    // only ever narrows the view, and re-cutting the lattice every frame of
+    // that would drop plots out of the board and pop them back on the way out.
+    const depth = this.boardHeight * Math.SQRT2 * SCREEN_UP_ON_FLOOR
 
     return {
-      across: this.viewHeight * aspect * Math.SQRT2 + margin,
+      across: this.boardHeight * aspect * Math.SQRT2 + margin,
       near: depth + margin,
       far: depth + margin + build
     }
@@ -1070,7 +1364,7 @@ export class PlotRenderer {
   frame(height: number): void {
     // Most of a column is below the floor, so the view is centred a little
     // above it rather than on the middle of the raw column height.
-    this.target.set(0, this.floorY + 3, 0)
+    this.boardTarget.set(0, this.floorY + 3, 0)
 
     // Zoom is set by the lattice pitch alone, not by the tallest build: the
     // board is a field of plots, and one player's tower must neither shrink
@@ -1078,7 +1372,6 @@ export class PlotRenderer {
     // allowed to run off the top; their labels are clamped back down.
     this.tallest = height
     this.baseHeight = this.spacing * 1.35
-    this.viewHeight = this.baseHeight / this.zoom
     this.resize()
   }
 
@@ -1093,13 +1386,17 @@ export class PlotRenderer {
   setZoom(zoom: number): void {
     if (this.disposed || Math.abs(zoom - this.zoom) < 0.0001) return
     this.zoom = zoom
-    this.viewHeight = this.baseHeight / this.zoom
     this.resize()
   }
 
   /** How far in the view has been brought, as a factor of the board's framing. */
   get zoomLevel(): number {
     return this.zoom
+  }
+
+  /** Half-height of the view the board frames itself at, before any focus. */
+  private get boardHeight(): number {
+    return this.baseHeight / this.zoom
   }
 
   /** Recomputes the projection for the canvas's current size. */
@@ -1110,7 +1407,29 @@ export class PlotRenderer {
     const height = this.canvas.clientHeight || 1
     this.renderer.setSize(width, height, false)
 
-    const aspect = width / height
+    const buffer = this.renderer.getDrawingBufferSize(this.bufferSize)
+    this.sceneTarget.setSize(buffer.x, buffer.y)
+
+    this.updateCamera()
+    this.rebuildGround()
+    this.invalidate()
+  }
+
+  /**
+   * Places the camera wherever it has got to between the board and one plot.
+   *
+   * Everything a focus does to the camera happens here: the board's framing and
+   * the plot's are worked out apart from each other and mixed by how far in it
+   * has come, so a focus caught half way is a perfectly good camera rather than
+   * a state with no way back out of it.
+   */
+  private updateCamera(): void {
+    const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1)
+    const board = this.boardHeight
+
+    this.viewHeight = board + (this.focusHeight - board) * this.focusEase
+    this.target.lerpVectors(this.boardTarget, this.focusCentre, this.focusEase)
+
     const halfHeight = this.viewHeight
     const halfWidth = halfHeight * aspect
 
@@ -1119,67 +1438,21 @@ export class PlotRenderer {
     this.camera.top = halfHeight
     this.camera.bottom = -halfHeight
 
-    const distance = Math.max(this.viewHeight * 6, 800)
     this.camera.position
-      .set(1, 1, 1)
-      .normalize()
-      .multiplyScalar(distance)
+      .copy(CAMERA_DIRECTION)
+      .applyAxisAngle(SPIN_AXIS, this.focusSpin * this.focusEase)
+      // As far off as the board would have put it whatever it is looking at: an
+      // orthographic view is the same picture from any distance, and closing
+      // the gap as well would only risk the near plane.
+      .multiplyScalar(Math.max(board * 6, 800))
       .add(this.target)
     this.camera.lookAt(this.target)
     this.camera.updateProjectionMatrix()
 
-    this.tileVeil()
-    this.fitShadowCamera(halfWidth, halfHeight)
-    this.rebuildGround()
-    this.invalidate()
-  }
-
-  /**
-   * Puts the shadow under the focused plot, sized to the plot's own footprint.
-   *
-   * The plot is centred on the screen, so the shadow only has to be dropped by
-   * half the plot's height to sit under it. Widths are worked out in the space
-   * the backdrop is drawn in, where the screen runs from -1 to 1 whichever way
-   * round it is.
-   */
-  private layShadow(mesh: Mesh, scale: number): void {
-    // Measured through the camera rather than worked out from the angles it is
-    // set at: the plot's base is a square on the floor, and where its corners
-    // land on screen is exactly the shape the shadow under it should be.
-    this.camera.updateMatrixWorld()
-
-    const half = (this.columnWidth * scale) / 2
-    const middle = mesh.position
-    const base = this.shadowAt.copy(middle).project(this.camera)
-
-    // The two corners of the base that the camera puts furthest apart: one
-    // below the middle, one beside it. Both diagonals are measured rather than
-    // worked out, so the shadow keeps the plot's own proportions at any zoom.
-    const drop = Math.abs(
-      this.shadowEdge.set(middle.x + half, middle.y, middle.z + half).project(this.camera).y -
-        base.y
-    )
-    const reach = Math.abs(
-      this.shadowEdge.set(middle.x + half, middle.y, middle.z - half).project(this.camera).x -
-        base.x
-    )
-
-    // Hung on the near corner rather than on the middle of the base: the middle
-    // is behind the plot's own faces, where none of the shadow would show.
-    this.shadowPane.position.set(base.x, base.y - drop, 0)
-    this.shadowPane.scale.set(reach * 2 * SHADOW_SPREAD, drop * 2 * SHADOW_SPREAD, 1)
-  }
-
-  /**
-   * Tiles the backdrop at the size the board's own blocks are drawn at, so a
-   * plot on the stage stands against the same paving as the board it came from
-   * rather than against a pattern of its own.
-   */
-  private tileVeil(): void {
-    if (!this.veilTexture) return
-    const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1)
-    const blocksDown = this.viewHeight * 2
-    this.veilTexture.repeat.set(blocksDown * aspect, blocksDown)
+    // Sized and aimed for the board, not for the focus: the shadow map covers
+    // the whole board either way, and re-fitting it as the camera comes in
+    // would shift every shadow on the way.
+    this.fitShadowCamera(board * aspect, board)
   }
 
   /**
@@ -1199,13 +1472,18 @@ export class PlotRenderer {
     shadow.far = radius * 6
     shadow.updateProjectionMatrix()
 
-    this.sun.target.position.copy(this.target)
+    // One shadow texel of normal offset: enough to clear the acne, little
+    // enough that the shadow still meets the block it belongs to. A fixed world
+    // distance cannot do both, because a texel grows and shrinks with the zoom.
+    this.sun.shadow.normalBias = (radius * 2) / this.sun.shadow.mapSize.x
+
+    this.sun.target.position.copy(this.boardTarget)
     this.sun.target.updateMatrixWorld()
     this.sun.position
       .set(0.55, 1.15, 0.8)
       .normalize()
       .multiplyScalar(radius * 2.2)
-      .add(this.target)
+      .add(this.boardTarget)
   }
 
   /** Draws immediately rather than on the next frame. */
@@ -1226,7 +1504,8 @@ export class PlotRenderer {
   }
 
   /**
-   * One frame: the board, the veil over all of it, then the focused plot.
+   * One frame: the board, the wash over all of it, then the focused plot, all
+   * drawn off screen and put through the lens on the way to the canvas.
    *
    * The glint is the one thing in the scene that moves on its own, so its
    * clock is read at the moment of drawing rather than passed in: a frame drawn
@@ -1238,36 +1517,85 @@ export class PlotRenderer {
       this.glintMaterial.uniforms.uTime.value = this.changeClock.value
     }
 
+    this.renderer.setRenderTarget(this.sceneTarget)
     this.renderer.clear()
 
     const hero = this.veil > 0 ? this.focusedMesh : null
-    if (!hero) {
-      this.renderer.render(this.scene, this.camera)
-      return
-    }
-
-    // Nothing of the board is left to see once the veil is up, so it stops
-    // being drawn at all rather than being drawn and then painted over.
-    if (this.veil < 0.995) {
+    if (hero) {
+      // Drawn twice: once with the board, which is never wholly painted over
+      // any more, and once over the sky so that it alone comes through at full
+      // strength. It is left out of the first pass because a second draw at
+      // exactly the same depth would be rejected.
       hero.visible = false
       this.renderer.render(this.scene, this.camera)
       hero.visible = true
+
+      this.aimVeil()
+      this.renderer.render(this.veilScene, this.veilCamera)
+
+      // While the board is still there to be seen, the plot is still part of
+      // it: the board's own depth is left standing, and whatever is in front of
+      // the plot covers it, plaza and neighbours alike. Once the sky has taken
+      // the board, nothing left has any business covering anything - and it is
+      // the fade, not the floor, that hides the plot's underground half by then
+      // - so the depth goes and the block can open up.
+      if (this.veil >= OCCLUDE_UNTIL) this.renderer.clearDepth()
+      this.drawAlone(hero)
+    } else {
+      this.renderer.render(this.scene, this.camera)
     }
 
-    this.veilMaterial.opacity = this.veil
-    this.shadowMaterial.opacity = this.veil * SHADOW_STRENGTH
-    this.renderer.render(this.veilScene, this.veilCamera)
+    this.renderer.setRenderTarget(null)
+    this.renderer.clear()
+    this.focusLens()
+    this.renderer.render(this.dofScene, this.veilCamera)
+  }
 
-    // Drawn after the veil so that it alone stays lit, but against the depth
-    // the board just wrote rather than a fresh buffer: a plot that has only
-    // begun to rise is still in its shaft, and the half of it that is below the
-    // plaza has to stay buried until it has actually climbed out. Clearing here
-    // would put the whole column in front of the floor from the first frame,
-    // and hold it there through the last frame of the way back down.
-    //
-    // By the time the board stops being drawn at all, the plot is far enough
-    // forward that nothing in the board could have covered it anyway.
-    this.drawAlone(hero)
+  /**
+   * Points the sky at the plot it is clearing a space around.
+   *
+   * The clearing is a circle on the plaza, which this camera shows as an
+   * ellipse: as wide as the view is in blocks, and flattened going up it by
+   * exactly as much as the floor is. Worked out here rather than in the shader,
+   * which has no idea what a block is.
+   */
+  private aimVeil(): void {
+    const uniforms = this.veilMaterial.uniforms
+    const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1)
+
+    this.camera.updateMatrixWorld()
+    this.veilFocus.copy(this.focusCentre).project(this.camera)
+
+    uniforms.uProgress.value = this.veil
+    uniforms.uFocus.value.set(this.veilFocus.x, this.veilFocus.y)
+    // A circle facing the camera, so it is the same number of blocks across
+    // the screen whichever way it is measured and reaches past the plot on
+    // every side rather than only at its shoulders.
+    uniforms.uRadius.value.set(
+      CLEARING_BLOCKS / (this.viewHeight * aspect),
+      CLEARING_BLOCKS / this.viewHeight
+    )
+  }
+
+  /**
+   * Tells the lens where it is focused.
+   *
+   * The plane of focus is whatever the camera is looking at, which on the board
+   * is the middle of it and during a focus is the plot itself - so the plot
+   * comes through sharp for the same reason the middle of the board does,
+   * rather than by being exempted from anything.
+   */
+  private focusLens(): void {
+    const uniforms = this.dofMaterial.uniforms
+    // Measured the way the depth buffer reads: down the camera's own axis, and
+    // negative in front of it.
+    uniforms.uFocus.value = -this.camera.position.distanceTo(this.target)
+    uniforms.uNear.value = this.camera.near
+    uniforms.uFar.value = this.camera.far
+    uniforms.uTexel.value.set(1 / this.sceneTarget.width, 1 / this.sceneTarget.height)
+    // Given in CSS pixels, so the blur is as wide on a retina screen as it is
+    // anywhere else rather than half as wide.
+    uniforms.uRadius.value = DOF_RADIUS * this.renderer.getPixelRatio()
   }
 
   /**
@@ -1278,6 +1606,8 @@ export class PlotRenderer {
    * them would drift away from the board it came out of.
    */
   private drawAlone(hero: Mesh): void {
+    const own = hero.material
+    if (this.revealing) hero.material = this.revealMaterials
     this.floorPatch.visible = false
     this.shaftPatch.visible = false
     const glinting = this.glintMesh.visible
@@ -1288,6 +1618,7 @@ export class PlotRenderer {
 
     this.renderer.render(this.scene, this.camera)
 
+    hero.material = own
     this.floorPatch.visible = this.hasColumns
     this.shaftPatch.visible = this.hasColumns
     this.glintMesh.visible = glinting
@@ -1321,12 +1652,14 @@ export class PlotRenderer {
     this.shaftPatch.geometry.dispose()
 
     this.material.dispose()
+    this.changeDepth.dispose()
+    for (const material of this.revealMaterials) material.dispose()
     this.blendedMaterial.dispose()
     this.veilPane.geometry.dispose()
-    this.shadowPane.geometry.dispose()
-    this.shadowMaterial.map?.dispose()
-    this.shadowMaterial.dispose()
-    this.veilTexture?.dispose()
+    this.dofQuad.geometry.dispose()
+    this.dofMaterial.dispose()
+    this.sceneTarget.depthTexture?.dispose()
+    this.sceneTarget.dispose()
     this.fadeMaterial.dispose()
     this.veilMaterial.dispose()
     this.glintMaterial.dispose()
@@ -1376,28 +1709,153 @@ function buildGeometry(mesh: ColumnMesh, now: number): BufferGeometry {
 }
 
 /**
- * A soft blob, for the shadow a focused plot lays on the backdrop.
+ * The lens the finished picture is put through.
  *
- * Squared off towards the middle rather than a plain radial fade, so it reads
- * as a shadow under something solid rather than as a smudge.
+ * A plane of focus at whatever the camera is looking at, and everything either
+ * side of it gathered from a disc that widens with how far out of focus it is.
+ * Under an orthographic camera at isometric angles that plane cuts the screen
+ * as a diagonal band, which is the tilt-shift look: the board reads as a model
+ * of itself, and the one thing the camera is on stays sharp.
+ *
+ * One pass rather than the usual two. The board is a quiet picture with a small
+ * circle of confusion, and a separable blur would cost a second buffer to hide
+ * a difference nothing at this radius is big enough to show.
  */
-function buildShadowTexture(): CanvasTexture | null {
-  const size = 128
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const context = canvas.getContext('2d')
-  if (!context) return null
+function buildDofMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    name: 'tilt-shift',
+    defines: { TAPS: DOF_TAPS },
+    uniforms: {
+      tColour: { value: null },
+      tDepth: { value: null },
+      uTexel: { value: new Vector2() },
+      uFocus: { value: 0 },
+      uNear: { value: 0 },
+      uFar: { value: 0 },
+      uRange: { value: DOF_RANGE },
+      uRadius: { value: DOF_RADIUS }
+    },
+    depthTest: false,
+    depthWrite: false,
+    blending: NoBlending,
+    vertexShader: `
+      varying vec2 vUv;
 
-  const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)')
-  gradient.addColorStop(0.45, 'rgba(255, 255, 255, 0.85)')
-  gradient.addColorStop(0.75, 'rgba(255, 255, 255, 0.28)')
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)')
-  context.fillStyle = gradient
-  context.fillRect(0, 0, size, size)
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }
+    `,
+    fragmentShader: `
+      #include <packing>
 
-  return new CanvasTexture(canvas)
+      uniform sampler2D tColour;
+      uniform sampler2D tDepth;
+      uniform vec2 uTexel;
+      uniform float uFocus;
+      uniform float uNear;
+      uniform float uFar;
+      uniform float uRange;
+      uniform float uRadius;
+
+      varying vec2 vUv;
+
+      // How far out of focus one point is, from nothing to fully blurred.
+      float confusion(vec2 uv) {
+        float depth = texture2D(tDepth, uv).x;
+        float viewZ = orthographicDepthToViewZ(depth, uNear, uFar);
+        return clamp(abs(viewZ - uFocus) / uRange, 0.0, 1.0);
+      }
+
+      void main() {
+        float here = confusion(vUv);
+        float radius = here * uRadius;
+
+        vec4 sum = texture2D(tColour, vUv);
+        float weight = 1.0;
+
+        for (int i = 0; i < TAPS; i++) {
+          // A golden-angle spiral: every tap lands somewhere the ones before it
+          // did not, at any count, without a table of offsets to carry around.
+          float ring = (float(i) + 0.5) / float(TAPS);
+          float angle = float(i) * 2.399963;
+          vec2 at = vUv + vec2(cos(angle), sin(angle)) * sqrt(ring) * radius * uTexel;
+
+          // A tap that is itself in focus does not get to smear over what is
+          // behind it, so a sharp edge keeps its own outline instead of
+          // bleeding into whatever the blur reaches for.
+          float share = min(confusion(at) / max(here, 0.001), 1.0);
+          sum += texture2D(tColour, at) * share;
+          weight += share;
+        }
+
+        gl_FragColor = sum / weight;
+
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `
+  })
+}
+
+/**
+ * The sky a focused plot stands against, and the hole it clears in the board.
+ *
+ * Full strength around the plot, easing off to leave a fifth of the board
+ * standing further out. The gradient is mixed here rather than sampled from a
+ * strip, so the colours stay in the space the rest of the frame is in and
+ * nothing has to be decoded on the way past.
+ */
+function buildVeilMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    name: 'backdrop',
+    uniforms: {
+      uTop: { value: BACKDROP_TOP },
+      uBottom: { value: BACKDROP_BOTTOM },
+      uProgress: { value: 0 },
+      uFocus: { value: new Vector2() },
+      uRadius: { value: new Vector2(1, 1) },
+      uClean: { value: CLEARING_CLEAN / CLEARING_BLOCKS },
+      uRemains: { value: BOARD_REMAINS }
+    },
+    transparent: true,
+    // It is the pane, not part of the scene: nothing occludes it and it
+    // occludes nothing.
+    depthTest: false,
+    depthWrite: false,
+    vertexShader: `
+      varying vec2 vUv;
+
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uTop;
+      uniform vec3 uBottom;
+      uniform float uProgress;
+      uniform vec2 uFocus;
+      uniform vec2 uRadius;
+      uniform float uClean;
+      uniform float uRemains;
+
+      varying vec2 vUv;
+
+      void main() {
+        // Distance from the plot, in clearings rather than in pixels.
+        vec2 fromPlot = (vUv * 2.0 - 1.0 - uFocus) / uRadius;
+        float away = length(fromPlot);
+
+        // Swept clean as far as the plot's own edge, then fading back in, until
+        // by the edge of the clearing the board is merely dimmed - and it stays
+        // that way however much further out you look.
+        float cover = mix(1.0, 1.0 - uRemains, smoothstep(uClean, 1.0, away));
+
+        gl_FragColor = vec4(mix(uBottom, uTop, vUv.y), cover * uProgress);
+      }
+    `
+  })
 }
 
 /**

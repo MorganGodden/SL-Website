@@ -9,6 +9,14 @@ export default {
     './node_modules/primevue/**/*.{vue,js,ts,jsx,tsx}'
   ],
   plugins: [require('tailwindcss-primeui')],
+  /*
+   * The site has no dark mode. This line is what keeps it that way: the
+   * vendored PrimeVue theme under src/assets/primevue/ is written throughout
+   * with `dark:` utilities, and this points them at an `app-dark` class that
+   * nothing ever sets. Drop it and Tailwind falls back to the `media`
+   * strategy, which turns every one of them on for any visitor whose OS is in
+   * dark mode.
+   */
   darkMode: ['selector', '[class*="app-dark"]'],
   theme: {
     extend: {

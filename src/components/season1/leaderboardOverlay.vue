@@ -61,6 +61,15 @@ function hasPlot(entry: LeaderboardEntry): boolean {
   return props.plotted?.includes(entry.playerUuid) ?? true
 }
 
+/**
+ * Name widths for the placeholder rows, so the wait reads as a list of names
+ * rather than as a barcode of identical bars. Eight of them: the panel is
+ * centred on the screen and grows from wherever it starts, so standing in for
+ * roughly the number of rows that will arrive keeps it from lurching when they
+ * do.
+ */
+const SKELETON_WIDTHS = ['42%', '28%', '55%', '35%', '48%', '31%', '44%', '38%']
+
 /** What a screen reader hears for a row, which the eye reads as columns. */
 function rowLabel(entry: LeaderboardEntry): string {
   return `Rank ${entry.rank}, ${entry.playerName}, ${entry.score.toLocaleString()} points`
@@ -145,10 +154,29 @@ function rowLabel(entry: LeaderboardEntry): string {
           </div>
 
           <div class="max-h-[60vh] overflow-y-auto px-2 pb-2">
-            <p v-if="loading" class="px-2 py-6 text-center text-sm text-slate-600">
-              <i class="pi pi-spinner mr-1 animate-spin text-xs" aria-hidden="true" />
-              Fetching scores...
-            </p>
+            <!--
+              Placeholder rows rather than a line of text: the panel is centred
+              on the screen, so a one-line wait replaced by a full list jumps
+              the whole thing. These stand in the shape the rows will take.
+            -->
+            <ul
+              v-if="loading"
+              class="flex flex-col gap-0.5"
+              role="status"
+              aria-label="Fetching scores"
+            >
+              <li
+                v-for="(width, i) in SKELETON_WIDTHS"
+                :key="i"
+                class="flex items-center gap-3 px-2 py-1.5"
+                aria-hidden="true"
+              >
+                <span class="skeleton h-3 w-6 shrink-0 rounded" />
+                <span class="skeleton size-5 shrink-0 rounded-sm" />
+                <span class="skeleton h-3 rounded" :style="{ width }" />
+                <span class="skeleton ml-auto h-3 w-10 shrink-0 rounded" />
+              </li>
+            </ul>
             <p v-else-if="matches.length === 0" class="px-2 py-6 text-center text-sm text-slate-600">
               {{ rows.length === 0 ? 'No scores yet' : `No player matching “${search}”` }}
             </p>
@@ -267,6 +295,22 @@ function rowLabel(entry: LeaderboardEntry): string {
   opacity: 1;
 }
 
+/*
+ * The placeholder bars. Slate at low opacity rather than the usual grey, so
+ * they sit on the glass as something behind it rather than on top of it, and
+ * they breathe slowly - a fast pulse under a centred panel is a strobe.
+ */
+.skeleton {
+  background-color: rgba(15, 23, 42, 0.1);
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.12s ease;
@@ -283,6 +327,10 @@ function rowLabel(entry: LeaderboardEntry): string {
   .fade-enter-active,
   .fade-leave-active {
     transition: none;
+  }
+
+  .skeleton {
+    animation: none;
   }
 }
 </style>

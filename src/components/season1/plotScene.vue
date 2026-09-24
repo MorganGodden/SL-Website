@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import Slider from 'primevue/slider'
 import { PlotRenderer, type RenderSlot } from '@/plots/plotRenderer'
 import { PlotBoard, type BoardStatus } from '@/plots/plotBoard'
+import { resolvePlot } from '@/plots/plotLink'
 import { plotsConfigured } from '@/plots/plotsClient'
 import {
   PLOT_GAP,
@@ -30,8 +31,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   status: [BoardStatus]
-  /** A plot has taken the stage, or has just been let go of. */
-  focused: [boolean]
+  /** The plot that has taken the stage, or null when one is let go of. */
+  focused: [{ uuid: string; name: string } | null]
   /** The board was clicked while something was covering it. */
   dismiss: []
   /** Escape was pressed and the board had no use for it. */
@@ -94,7 +95,17 @@ const LIFT_EPSILON = 0.01
 const FOCUS_TAU_MS = 95
 const FOCUS_EPSILON = 0.002
 /**
- * Radians a focused plot turns per pixel dragged.
+ * Time constant of the board washing out behind a plot that has been picked.
+ *
+ * Slower than the camera's own, which is the whole point of having two: the
+ * camera sets off first and the board only starts to go once it is clearly on
+ * its way, so the move reads as going somewhere rather than as a light being
+ * switched off. Slower on the way back as well, so the board comes back after
+ * the camera has pulled out rather than before it.
+ */
+const VEIL_TAU_MS = 240
+/**
+ * Radians the view of a focused plot turns per pixel dragged.
  *
  * A drag across the width of a phone comes to most of a full turn, which is
  * enough to get round the back of a build without a second grab.
@@ -217,9 +228,11 @@ let lastSlots: HoverSlot[] = []
  * letting a plot go is animated rather than a cut.
  */
 let focusKey: string | null = null
-/** 1 while the focused plot is coming forward, 0 while it is going back. */
+/** 1 while the camera is going in to the focused plot, 0 while it comes out. */
 let focusTarget = 0
 let focusProgress = 0
+/** The same journey, trailing behind: how far the board has washed out. */
+let veilProgress = 0
 /** How far the focused plot has been spun, in radians. */
 let focusSpin = 0
 /**
@@ -283,7 +296,7 @@ function frame(now: number): void {
   // The board always repeats, so it always has somewhere to scroll to. It does
   // not scroll at all while a plot is being looked at: the rest of the board
   // has faded out, and the plot on the stage is not going anywhere.
-  const drifting = now > manualUntil && focusKey === null
+  const drifting = now > manualUntil && !holding()
   if (drifting) {
     // The drift runs along a world axis, which an isometric camera shows as a
     // screen diagonal. Scrubbing is free to leave that axis.
@@ -326,7 +339,7 @@ function frame(now: number): void {
     // Nothing under a cover is hoverable, and a plot left lit under one would
     // stay lit for as long as it was there.
     clearHover()
-  } else if (focusKey === null) {
+  } else if (!holding()) {
     picked = pickHover(renderSlots, now)
   } else {
     // Nothing on the board behind the focused plot is hoverable, and the plot
@@ -391,7 +404,7 @@ function applyGlint(slots: HoverSlot[]): void {
 
   // A plot on the stage has been picked already, and a glint on the board
   // behind it would only pull the eye back off it.
-  const key = focusKey === null ? hoverKey : null
+  const key = !holding() ? hoverKey : null
   const lift = key === null ? undefined : lifts.find((entry) => entry.key === key)
   if (!lift) {
     renderer.setGlint(null, 0)
@@ -403,17 +416,27 @@ function applyGlint(slots: HoverSlot[]): void {
 }
 
 /**
- * Eases the clicked plot to the front of the scene, or back to its cell once it
- * has been let go.
+ * Eases the camera in to the clicked plot, or back out to the board once it has
+ * been let go, with the board washing out a beat behind it either way.
  */
 function applyFocus(slots: HoverSlot[], deltaMs: number): void {
-  if (!renderer || (focusKey === null && focusProgress === 0)) return
+  if (!renderer || (focusKey === null && focusProgress === 0 && veilProgress === 0)) return
 
-  const step = reduceMotion() ? 1 : 1 - Math.exp(-deltaMs / FOCUS_TAU_MS)
+  const reduced = reduceMotion()
+  const step = reduced ? 1 : 1 - Math.exp(-deltaMs / FOCUS_TAU_MS)
+  const wash = reduced ? 1 : 1 - Math.exp(-deltaMs / VEIL_TAU_MS)
   focusProgress += (focusTarget - focusProgress) * step
+  veilProgress += (focusTarget - veilProgress) * wash
 
-  if (Math.abs(focusTarget - focusProgress) < FOCUS_EPSILON) {
+  // The plot is only let go of once both have arrived: the wash is the one
+  // still moving by then, and dropping the focus out from under it would take
+  // the board back in a single frame.
+  if (
+    Math.abs(focusTarget - focusProgress) < FOCUS_EPSILON &&
+    Math.abs(focusTarget - veilProgress) < FOCUS_EPSILON
+  ) {
     focusProgress = focusTarget
+    veilProgress = focusTarget
     // Back in its cell: the stage is free, and the board can drift again.
     if (focusTarget === 0) focusKey = null
   } else {
@@ -421,7 +444,19 @@ function applyFocus(slots: HoverSlot[], deltaMs: number): void {
   }
 
   const index = focusKey === null ? -1 : slots.findIndex((slot) => slot.key === focusKey)
-  renderer.setFocus(index === -1 ? null : index, focusProgress)
+  renderer.setFocus(index === -1 ? null : index, focusProgress, veilProgress)
+}
+
+/**
+ * Whether a plot is actually being held, as opposed to still going back.
+ *
+ * `focusKey` outlives a release: it is kept until the camera has pulled out and
+ * the sky has faded, so that the way back can be animated at all. The board
+ * itself has no reason to wait for that - the moment the plot is let go it is
+ * the board again, and drags, hovers and clicks belong to it.
+ */
+function holding(): boolean {
+  return focusTarget === 1
 }
 
 /** Takes the focused plot back to its cell, whole and the way round it was. */
@@ -436,7 +471,7 @@ function releaseFocus(): void {
   needsRender = true
   // Announced on the way out rather than on landing: whatever moved aside for
   // the plot can come back while it is still travelling.
-  emit('focused', false)
+  emit('focused', null)
 }
 
 /**
@@ -775,10 +810,15 @@ function onPointerMove(event: PointerEvent): void {
   dragY = event.clientY
   dragDistance += Math.hypot(dx, dy)
 
-  if (focusKey !== null) {
-    // The board is frozen behind the focused plot, so a drag turns the plot
-    // instead of scrubbing what is no longer moving.
-    focusSpin += dx * SPIN_PER_PIXEL
+  if (holding()) {
+    // The board is frozen behind the focused plot, so a drag turns the view of
+    // it instead of scrubbing what is no longer moving.
+    //
+    // Subtracted, because what actually moves is the camera: dragging right
+    // swings it left around the plot, which is what carries the plot's right
+    // side towards the viewer - the plot follows the hand rather than fleeing
+    // it, the way turning something on a table does.
+    focusSpin -= dx * SPIN_PER_PIXEL
     renderer?.setFocusSpin(focusSpin)
     needsRender = true
     return
@@ -806,7 +846,7 @@ function onPointerUp(event: PointerEvent): void {
   dragging = false
   if (!clicked) return
 
-  if (focusKey !== null) {
+  if (holding()) {
     releaseFocus()
     return
   }
@@ -818,16 +858,35 @@ function onPointerUp(event: PointerEvent): void {
 }
 
 /**
- * Puts a named player's plot on the stage, the way clicking it would.
+ * Every player the board can show, by uuid and by whichever names they answer
+ * to - the leaderboard's and the one captured with the plot.
+ */
+function boardPlayers(): { uuid: string; name: string }[] {
+  return order.flatMap((uuid) => {
+    const names = [
+      props.rows.find((row) => row.playerUuid === uuid)?.playerName,
+      columns.get(uuid)?.playerName
+    ]
+    return names.filter((name): name is string => !!name).map((name) => ({ uuid, name }))
+  })
+}
+
+/**
+ * Puts a named player's plot on the stage, the way clicking it would. The
+ * player is named by uuid or by name, since a shared link carries a name.
  *
  * The lattice draws every player at many cells, so the copy nearest the middle
  * of the screen is the one brought forward. A board with more plots than the
  * view holds may not be drawing them anywhere, in which case the cell holding
  * them is brought to the middle first.
+ *
+ * Answers whether the board had that player at all: a link can name a plot
+ * that has not been published yet, or one the board has since dropped.
  */
-function focusPlayer(uuid: string): void {
-  const index = order.indexOf(uuid)
-  if (index === -1 || spacing <= 0) return
+function focusPlayer(idOrName: string): boolean {
+  const uuid = resolvePlot(idOrName, boardPlayers())
+  const index = uuid === null ? -1 : order.indexOf(uuid)
+  if (uuid === null || index === -1 || spacing <= 0) return false
   // Asking for a second plot while one is up is a change of mind, not a
   // dismissal: the one on the stage goes back and the new one comes forward.
   if (focusKey !== null) releaseFocus()
@@ -838,7 +897,7 @@ function focusPlayer(uuid: string): void {
       Math.hypot(a.x, a.z) <= Math.hypot(b.x, b.z) ? a : b
     )
     takeFocus(nearest.key, uuid)
-    return
+    return true
   }
 
   // The row the board is already on is kept and the column solved for, so it
@@ -859,6 +918,7 @@ function focusPlayer(uuid: string): void {
   // The cell is not drawn until the next frame; the stage is keyed by the cell
   // rather than by that frame's slot, so it finds it when it is.
   takeFocus(`${gx}:${gz}`, uuid)
+  return true
 }
 
 /** Puts a plot on the stage, facing as it stood and cut at nothing. */
@@ -885,7 +945,7 @@ function takeFocus(key: string, uuid: string): void {
   }
 
   needsRender = true
-  emit('focused', true)
+  emit('focused', { uuid, name: focus.value.name })
 }
 
 /**
@@ -1028,13 +1088,6 @@ onBeforeUnmount(() => {
   >
     <canvas ref="canvas" class="block h-full w-full" />
 
-    <!--
-      Tilt shift. The board is a model of a world and reads as one when only a
-      band of it is sharp; the labels and the controls sit above this, so they
-      stay legible wherever they are on screen.
-    -->
-    <div class="tilt-shift" :class="{ 'tilt-shift--off': focus }" aria-hidden="true" />
-
     <!-- The hovered plot's card, at that plot's top projected into screen space -->
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
       <Transition name="plot-card">
@@ -1070,9 +1123,9 @@ onBeforeUnmount(() => {
       >
         <div class="absolute inset-y-0 right-0 flex items-center p-4 sm:p-6">
           <div
-            class="pointer-events-auto flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-4 backdrop-blur-sm"
+            class="pointer-events-auto flex flex-col items-center gap-3 rounded-xl border border-white/60 bg-white/55 px-3 py-4 backdrop-blur-sm"
           >
-            <span class="text-[10px] font-semibold uppercase tracking-wider text-white/50">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
               Slice
             </span>
             <Slider
@@ -1084,9 +1137,9 @@ onBeforeUnmount(() => {
               aria-label="Slice height"
               @update:model-value="setSlice(Number($event))"
             />
-            <span class="text-xs font-semibold tabular-nums text-white/80">Y {{ focus.worldY }}</span>
+            <span class="text-xs font-semibold tabular-nums text-slate-800">Y {{ focus.worldY }}</span>
             <button
-              class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/40 transition-colors hover:text-white/80"
+              class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500 transition-colors hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-600 disabled:opacity-40"
               :disabled="focus.cut === focus.layers"
               @click="setSlice(focus.layers)"
             >
@@ -1096,11 +1149,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1 text-center">
-          <span class="text-sm font-semibold text-white/90">
+          <span class="text-sm font-semibold text-slate-800">
             {{ focus.name }}
             <span v-if="focus.score" class="ml-1 font-normal text-white/50">{{ focus.score }}</span>
           </span>
-          <span class="text-[11px] text-white/45">
+          <span class="text-[11px] text-slate-600">
             Drag to spin &middot; scroll to slice &middot; pinch to zoom &middot; click anywhere to
             go back
           </span>
@@ -1126,61 +1179,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/*
- * A band of the board is left alone and everything above and below it is put
- * out of focus, which is what a tilt-shift lens does and why a real scene shot
- * through one looks like a model.
- *
- * The blur is done by the compositor, over whatever is behind this element -
- * the canvas - so the board itself is drawn once and sharp, and nothing in the
- * renderer has to know about any of it. The band sits a little above the middle
- * because the board recedes upwards: that is where the eye expects the subject
- * of an isometric view to be.
- *
- * One layer at the far end and a gentler one at the near end, so the top of
- * the board falls away faster than the bottom does, the way distance behaves.
- */
-.tilt-shift {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  -webkit-backdrop-filter: blur(3.5px);
-  backdrop-filter: blur(3.5px);
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    rgb(0 0 0 / 100%) 0%,
-    rgb(0 0 0 / 70%) 12%,
-    rgb(0 0 0 / 0%) 34%,
-    rgb(0 0 0 / 0%) 63%,
-    rgb(0 0 0 / 55%) 84%,
-    rgb(0 0 0 / 85%) 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    rgb(0 0 0 / 100%) 0%,
-    rgb(0 0 0 / 70%) 12%,
-    rgb(0 0 0 / 0%) 34%,
-    rgb(0 0 0 / 0%) 63%,
-    rgb(0 0 0 / 55%) 84%,
-    rgb(0 0 0 / 85%) 100%
-  );
-  transition: opacity 180ms ease;
-}
-
-/*
- * A plot brought forward is the subject, and a subject is not something to
- * look at through a lens trick: it fills the height of the screen, and the
- * band would cut its top and bottom off.
- */
-.tilt-shift--off {
-  opacity: 0;
-  /* Not merely invisible: a backdrop filter left declared is a full-screen
-     blur the compositor may go on computing behind a plot that is covering it
-     anyway. */
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
 /*
  * The card is already held back for a moment, so it should arrive softly
  * rather than snap into place. It leaves faster than it arrives: a card that
