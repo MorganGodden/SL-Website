@@ -6,11 +6,14 @@ import { PlotBoard, type BoardStatus } from '@/plots/plotBoard'
 import { resolvePlot } from '@/plots/plotLink'
 import { plotsConfigured } from '@/plots/plotsClient'
 import {
-  PLOT_GAP,
+  ASSUMED_PLOT_WIDTH,
   SCROLL_DIRECTION,
+  boardPitch,
   layoutGrid,
   pickStride,
-  screenDeltaToWorld
+  rescaleScroll,
+  screenDeltaToWorld,
+  widestPlot
 } from '@/plots/boardLayout'
 import type { DecodeSuccess } from '@/plots/decode.worker'
 import type { LeaderboardEntry } from '@/common/interfaces'
@@ -155,6 +158,9 @@ interface ColumnRecord {
   plotIndex: number
   occupiedHeight: number
   surfaceLevel: number
+  /** Footprint in blocks, as published. The lattice is sized from these. */
+  sizeX: number
+  sizeZ: number
   /** World y of layer 0, so a cut can be named by the height it stands at. */
   minY: number
 }
@@ -195,8 +201,8 @@ let frameHandle: number | null = null
 const columns = new Map<string, ColumnRecord>()
 /** The player list in display order; the board repeats over it. */
 let order: string[] = []
-let spacing = 16 + PLOT_GAP
-let plotWidth = 16
+let plotWidth = ASSUMED_PLOT_WIDTH
+let spacing = boardPitch(plotWidth)
 /**
  * Quarter turns only keep a plot inside its shaft while its footprint is
  * square, which every plot published so far is. A rectangular one is turned by
@@ -657,6 +663,33 @@ function clearHover(): void {
   hovered.value = null
 }
 
+/**
+ * Re-sizes the lattice to the plots actually on the board.
+ *
+ * Plot size is a server setting and is published per plot, so this is driven by
+ * the widest one decoded rather than by any constant here. It runs on every
+ * mesh because a wider plot can arrive at any time - a board that is all one
+ * size settles on the first one and never moves again.
+ */
+function resizeLattice(): void {
+  if (!renderer) return
+
+  const plots = [...columns.values()]
+  const width = widestPlot(plots)
+  const pitch = boardPitch(width)
+  if (width === plotWidth && pitch === spacing) return
+
+  // Hold the board still: the scroll names a cell, and the cell just changed
+  // size underneath it.
+  scroll.x = rescaleScroll(scroll.x, spacing, pitch)
+  scroll.z = rescaleScroll(scroll.z, spacing, pitch)
+
+  plotWidth = width
+  spacing = pitch
+  squarePlots = plots.every((plot) => plot.sizeX === plot.sizeZ)
+  renderer.setGrid(spacing, plotWidth)
+}
+
 function onMesh(mesh: DecodeSuccess): void {
   if (!renderer) return
   needsRender = true
@@ -667,13 +700,12 @@ function onMesh(mesh: DecodeSuccess): void {
     plotIndex: mesh.plotIndex,
     occupiedHeight: mesh.occupiedHeight,
     surfaceLevel: mesh.surfaceLevel,
-    minY: mesh.minY
+    minY: mesh.minY,
+    sizeX: mesh.sizeX,
+    sizeZ: mesh.sizeZ
   })
 
-  plotWidth = mesh.sizeX
-  squarePlots = mesh.sizeX === mesh.sizeZ
-  spacing = mesh.sizeX + PLOT_GAP
-  renderer.setGrid(spacing, plotWidth)
+  resizeLattice()
 
   // The floor is flush with the plots' grass layer, so the columns descend into
   // it. Taken from the median across plots so one player's terracing does not

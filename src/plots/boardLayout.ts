@@ -11,6 +11,64 @@
 export const PLOT_GAP = 2
 
 /**
+ * The plot width assumed before a single column has been decoded.
+ *
+ * Plot size is a server setting (`plots.middle-chunks`), published as `sizeX`
+ * and `sizeZ` on every payload, so this is only the guess the first frame is
+ * laid out with. {@link boardPitch} replaces it as soon as a column arrives,
+ * and {@link rescaleScroll} keeps the board where it was when it does. It is
+ * the plugin's own default so that the usual case never has to correct itself.
+ */
+export const ASSUMED_PLOT_WIDTH = 32
+
+/** The footprint of one decoded plot, in blocks. */
+export interface PlotFootprint {
+  sizeX: number
+  sizeZ: number
+}
+
+/**
+ * How wide a lattice cell has to be to hold every plot on the board.
+ *
+ * The widest side of the widest plot, not the newest: plots are sized by the
+ * server that published them, and a board can legitimately hold a mix - a
+ * server that changed the setting still serves the old size for any plot
+ * nobody has revisited since. Sizing to the newest would let a small plot
+ * arriving late shrink the lattice under the large ones already on it, which
+ * overlaps them. Every plot is drawn about its own centre, so one narrower than
+ * the cell simply sits in a roomier gap.
+ *
+ * Both axes count, because a plot that is not square is turned by half turns
+ * and so needs its long side to fit whichever way it faces.
+ */
+export function widestPlot(plots: Iterable<PlotFootprint>): number {
+  let widest = 0
+  for (const plot of plots) {
+    widest = Math.max(widest, plot.sizeX, plot.sizeZ)
+  }
+  return widest > 0 ? widest : ASSUMED_PLOT_WIDTH
+}
+
+/** The lattice pitch for a plot width: the plot plus the floor around it. */
+export function boardPitch(plotWidth: number): number {
+  return plotWidth + PLOT_GAP
+}
+
+/**
+ * Where the board has scrolled to, restated for a new pitch.
+ *
+ * The scroll is a world distance, but what it means is "this lattice cell is
+ * under the camera". Re-pitching the lattice without restating it would leave
+ * the scroll naming a different cell, so the board would jump the moment a
+ * wider plot arrived - and it arrives asynchronously, mid-drift. Scaling keeps
+ * the cell, and with it whatever the viewer was looking at.
+ */
+export function rescaleScroll(value: number, oldPitch: number, newPitch: number): number {
+  if (oldPitch <= 0 || newPitch <= 0) return value
+  return (value / oldPitch) * newPitch
+}
+
+/**
  * Direction of the automatic drift in world space.
  *
  * The lattice sits on the world axes so that neighbouring plots meet edge to

@@ -105,8 +105,9 @@ export function decodeSnapshot(payload: PlotSnapshot): DecodedColumn {
     }
   }
   if (!Number.isInteger(minY)) throw new Error(`snapshot has invalid minY: ${minY}`)
-  // A one-chunk column caps the palette well below 2^16, so a wider index means
-  // something has changed structurally and the Uint16Array below would truncate.
+  // A plot's palette is the handful of blocks it is built from, orders of
+  // magnitude below 2^16 at any plot size, so a wider index means something has
+  // changed structurally and the Uint16Array below would truncate.
   if (bitsPerIndex > 16) {
     throw new Error(`bitsPerIndex ${bitsPerIndex} exceeds the supported maximum of 16`)
   }

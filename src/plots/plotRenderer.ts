@@ -37,7 +37,13 @@ import {
 } from 'three'
 import atlasUrl from '@/assets/textures/blocks.png'
 import { faceTilesForEntry, tilePixelRect } from './blockAtlas'
-import { CAMERA_ELEVATION, SCREEN_UP_ON_FLOOR, wrapDistance } from './boardLayout'
+import {
+  ASSUMED_PLOT_WIDTH,
+  CAMERA_ELEVATION,
+  SCREEN_UP_ON_FLOOR,
+  boardPitch,
+  wrapDistance
+} from './boardLayout'
 import { CHANGE_SECONDS, type ColumnMesh } from './mesher'
 
 // The scene is lit, so colours must be managed: block colours are authored in
@@ -535,8 +541,10 @@ export class PlotRenderer {
    */
   private boardTarget = new Vector3(0, 0, 0)
 
-  private spacing = 20
-  private columnWidth = 16
+  // Replaced by setGrid as soon as a column has been decoded and the real
+  // plot size is known; these only size the ground for the first frames.
+  private columnWidth = ASSUMED_PLOT_WIDTH
+  private spacing = boardPitch(ASSUMED_PLOT_WIDTH)
   /** Tallest build currently on the board, used to size the cull margin. */
   private tallest = 0
 

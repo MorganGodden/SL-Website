@@ -118,3 +118,77 @@ describe('decodeSnapshot', () => {
     )
   })
 })
+
+/**
+ * Plot size is a server setting (`plots.middle-chunks`), so 16 was never a
+ * property of the format and 32 is not either. These build payloads the way the
+ * plugin does, at sizes it can legitimately publish.
+ */
+function packBits(indices: number[], bitsPerIndex: number): string {
+  const bytes = new Uint8Array(Math.ceil((indices.length * bitsPerIndex) / 8))
+  indices.forEach((value, n) => {
+    for (let b = 0; b < bitsPerIndex; b++) {
+      if ((value >>> b) & 1) {
+        const bit = n * bitsPerIndex + b
+        bytes[bit >>> 3] |= 1 << (bit & 7)
+      }
+    }
+  })
+  return btoa(String.fromCharCode(...bytes))
+}
+
+function sized(sizeX: number, sizeY: number, sizeZ: number): PlotSnapshot {
+  const palette = ['minecraft:air', 'minecraft:stone', 'minecraft:grass_block']
+  const indices: number[] = []
+  for (let y = 0; y < sizeY; y++) {
+    for (let z = 0; z < sizeZ; z++) {
+      for (let x = 0; x < sizeX; x++) {
+        // A pattern that differs per axis, so a transposed stride shows up.
+        indices.push(y === 0 ? 1 : x === z ? 2 : 0)
+      }
+    }
+  }
+  return {
+    formatVersion: 1,
+    playerUuid: 'u',
+    playerName: 'n',
+    plotIndex: 0,
+    capturedAt: 0,
+    sizeX,
+    sizeY,
+    sizeZ,
+    minY: 48,
+    order: 'x-fastest,then-z,then-y',
+    bitsPerIndex: 2,
+    palette,
+    data: packBits(indices, 2)
+  }
+}
+
+describe('decoding a plot of any published size', () => {
+  it('reads the footprint from the payload rather than assuming one', () => {
+    for (const side of [16, 32, 48]) {
+      const column = decodeSnapshot(sized(side, 6, side))
+
+      expect(column.sizeX).toBe(side)
+      expect(column.sizeZ).toBe(side)
+      expect(column.indices.length).toBe(side * 6 * side)
+
+      const at = (x: number, layer: number, z: number) =>
+        column.baseIds[column.indices[(layer * column.sizeZ + z) * column.sizeX + x]]
+
+      expect(at(0, 0, 0)).toBe('minecraft:stone')
+      expect(at(side - 1, 0, side - 1)).toBe('minecraft:stone')
+      // x varies fastest: the diagonal is grass and everything off it is air.
+      expect(at(side - 1, 3, side - 1)).toBe('minecraft:grass_block')
+      expect(at(side - 1, 3, 0)).toBe('minecraft:air')
+    }
+  })
+
+  it('accepts a plot that is not square', () => {
+    const column = decodeSnapshot(sized(32, 4, 16))
+    expect(column.sizeX).toBe(32)
+    expect(column.sizeZ).toBe(16)
+    expect(column.indices.length).toBe(32 * 4 * 16)
+  })
+})

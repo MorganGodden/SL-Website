@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ASSUMED_PLOT_WIDTH,
   PLOT_GAP,
   SCREEN_UP_ON_FLOOR,
+  boardPitch,
   layoutGrid,
   pickStride,
   playerForCell,
+  rescaleScroll,
   screenDeltaToWorld,
   turnForCell,
+  widestPlot,
   wrapDistance
 } from '../boardLayout'
 
@@ -321,5 +325,69 @@ describe('solving a cell for a player', () => {
         }
       }
     }
+  })
+})
+
+/**
+ * Plot size is a server setting published on every payload, so the board has to
+ * take it from the plots it is given rather than from any constant of its own -
+ * including when the plots disagree, which they do while a server that changed
+ * the setting still serves the old size for plots nobody has revisited.
+ */
+describe('sizing the lattice to the plots', () => {
+  it('falls back to the assumed width only while nothing has been decoded', () => {
+    expect(widestPlot([])).toBe(ASSUMED_PLOT_WIDTH)
+    expect(widestPlot([{ sizeX: 16, sizeZ: 16 }])).toBe(16)
+  })
+
+  it('takes the widest plot, not the newest, so nothing overlaps its neighbour', () => {
+    const mixed = [
+      { sizeX: 16, sizeZ: 16 },
+      { sizeX: 48, sizeZ: 48 },
+      { sizeX: 32, sizeZ: 32 }
+    ]
+    expect(widestPlot(mixed)).toBe(48)
+    // Order must not matter: a small plot arriving last cannot shrink the board.
+    expect(widestPlot([...mixed].reverse())).toBe(48)
+  })
+
+  it('counts both axes, because a non-square plot is turned by half turns', () => {
+    expect(widestPlot([{ sizeX: 16, sizeZ: 64 }])).toBe(64)
+  })
+
+  it('leaves a gap of floor between neighbouring plots at any size', () => {
+    for (const width of [16, 32, 48, 208]) {
+      expect(boardPitch(width) - width).toBe(PLOT_GAP)
+    }
+  })
+
+  it('places plots without overlap at whatever size they are', () => {
+    for (const width of [16, 32, 48]) {
+      const spacing = boardPitch(width)
+      const cells = layoutGrid(6, spacing, 0, 0, EXTENT)
+      for (const a of cells) {
+        for (const b of cells) {
+          if (a.gx === b.gx && a.gz === b.gz) continue
+          const apart = Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z))
+          expect(apart).toBeGreaterThanOrEqual(width)
+        }
+      }
+    }
+  })
+})
+
+describe('rescaleScroll', () => {
+  it('keeps the board on the same lattice cell when the pitch changes', () => {
+    const before = boardPitch(16)
+    const after = boardPitch(32)
+    // Cell 7 sits at 7 * pitch, whatever the pitch is.
+    expect(rescaleScroll(7 * before, before, after)).toBeCloseTo(7 * after, 10)
+    expect(rescaleScroll(-3.5 * before, before, after)).toBeCloseTo(-3.5 * after, 10)
+  })
+
+  it('is a no-op for an unchanged pitch and safe for a degenerate one', () => {
+    expect(rescaleScroll(123, 18, 18)).toBe(123)
+    expect(rescaleScroll(123, 0, 34)).toBe(123)
+    expect(rescaleScroll(123, 18, 0)).toBe(123)
   })
 })
