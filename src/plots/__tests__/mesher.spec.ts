@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { meshColumn, findSurfaceLevel } from '../mesher'
+import { meshColumn, findSurfaceLevel, FACE_BUDGET } from '../mesher'
 import { decodeSnapshot, parseBaseId } from '../decode'
 import { faceTilesForEntry, tileBounds } from '../blockAtlas'
 import type { DecodedColumn, PlotSnapshot } from '../types'
@@ -695,5 +695,70 @@ describe('meshColumn on real data', () => {
     expect(mesh.sizeY).toBe(81)
     expect(mesh.minY).toBe(48)
     expect(mesh.surfaceLevel).toBeGreaterThan(0)
+  })
+})
+
+describe('meshColumn face budget', () => {
+  const FENCE = 'minecraft:oak_fence[east=true,north=true,south=true,waterlogged=true,west=true]'
+  const fences = () => synthetic(4, 3, 4, () => 1, ['minecraft:air', FENCE])
+  const checker = () => synthetic(6, 6, 6, (x, y, z) => ((x + y + z) % 2 === 0 ? 1 : 0))
+  const over = (column: DecodedColumn, budget: number, previous?: DecodedColumn) =>
+    meshColumn(column, undefined, previous, undefined, 'grow', budget)
+
+  it('draws a plot inside the budget in full', () => {
+    const mesh = over(fences(), FACE_BUDGET)
+    expect(mesh.detail).toBe('full')
+    // A post and eight rails a block, none of which can hide another.
+    expect(mesh.faceCount).toBeGreaterThan(48 * 9 * 6)
+  })
+
+  it('draws a plot over the budget as plain cubes, down to its skin', () => {
+    const mesh = over(fences(), 500)
+    expect(mesh.detail).toBe('cubes')
+    // 4x4 on top and 4x3 on each of the four sides; the bottom rests on the floor.
+    expect(mesh.faceCount).toBe(16 + 4 * 12)
+  })
+
+  it('draws a plot still over as cubes as a shell of its columns', () => {
+    const mesh = over(checker(), 100)
+    expect(mesh.detail).toBe('shell')
+    // One top for every column, and never more faces than five a column.
+    expect(countFaces(mesh, (_x, y) => y === 1)).toBe(36)
+    expect(mesh.faceCount).toBeLessThanOrEqual(36 * 5)
+    expect(mesh.changes.every((change) => change === 0)).toBe(true)
+  })
+
+  it('stands each shell wall on its neighbour and stretches it to the top', () => {
+    const heights = [1, 3, 2]
+    const mesh = over(
+      synthetic(3, 4, 1, (x, y) => (y < heights[x] ? 1 : 0)),
+      1
+    )
+    expect(mesh.detail).toBe('shell')
+    // Three tops; walls where a column stands over its neighbour or the edge.
+    expect(mesh.faceCount).toBe(3 + 3 + 4 + 3)
+
+    // The middle column's west wall, from its neighbour's height to its own.
+    const wallHeights: number[] = []
+    for (let vertex = 0; vertex < mesh.faceCount * 4; vertex++) {
+      const westFacing = mesh.normals[vertex * 3] === -127
+      if (westFacing && mesh.positions[vertex * 3] === 1 - 1.5) {
+        wallHeights.push(mesh.positions[vertex * 3 + 1])
+      }
+    }
+    expect([...new Set(wallHeights)].sort()).toEqual([1, 3])
+  })
+
+  it('charges the blocks leaving to the same budget as the plot', () => {
+    const empty = synthetic(4, 3, 4, () => 0, ['minecraft:air', FENCE])
+    // Nothing left standing, but a whole field of fences to draw going.
+    const mesh = over(empty, 500, fences())
+    expect(mesh.detail).toBe('cubes')
+    expect(mesh.faceCount).toBe(0)
+  })
+
+  it('keeps the whole of a real plot in full detail', () => {
+    const mesh = meshColumn(decodeSnapshot(realColumn as PlotSnapshot))
+    expect(mesh.detail).toBe('full')
   })
 })

@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { decodeSnapshot } from './decode'
-import { meshColumn, type ChangeStyle } from './mesher'
+import { meshColumn, type ChangeStyle, type MeshDetail } from './mesher'
 import type { DecodedColumn, PlotSnapshot } from './types'
 
 /**
@@ -57,6 +57,7 @@ export interface DecodeSuccess {
   minY: number
   paletteSize: number
   faceCount: number
+  detail: MeshDetail
   occupiedHeight: number
   surfaceLevel: number
   positions: Float32Array
@@ -111,6 +112,7 @@ function respond(
     minY: mesh.minY,
     paletteSize: column.palette.length,
     faceCount: mesh.faceCount,
+    detail: mesh.detail,
     occupiedHeight: mesh.occupiedHeight,
     surfaceLevel: mesh.surfaceLevel,
     positions: mesh.positions,

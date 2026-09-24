@@ -58,6 +58,8 @@ export interface ColumnMesh {
    */
   blendedIndexCount: number
   faceCount: number
+  /** How much of the plot's shape made it into the mesh; see `FACE_BUDGET`. */
+  detail: MeshDetail
   /**
    * Layers above the highest occupied block are empty air. Framing on this
    * rather than `sizeY` keeps a mostly-air column from rendering tiny.
@@ -72,6 +74,41 @@ export interface ColumnMesh {
   sizeY: number
   sizeZ: number
   minY: number
+}
+
+/**
+ * Most faces one plot may cost, which is what keeps any one plot from taking
+ * the board down with it.
+ *
+ * Geometry grows with what is built, not with the size of the payload: a plot
+ * of waterlogged fences is a few hundred bytes on the wire and nine million
+ * triangles meshed, enough to run the tab out of memory for every viewer.
+ * This is twice a plot dug out in a checkerboard through all sixteen breakable
+ * layers - about as much as survival play produces - at about 20 MB of buffers.
+ * The board draws each plot many times over, twice a frame for the shadow, so
+ * the number to tune it against is a low-end GPU with a board full of plots.
+ */
+export const FACE_BUDGET = 100_000
+
+/**
+ * How much of a plot's shape was drawn.
+ *
+ * `full` is every block as it is. A plot over the budget is drawn as `cubes`,
+ * every block a plain cube, which turns a field of fences, stairs and walls
+ * into its outer skin. One still over it - a solid built full of holes - is
+ * drawn as a `shell`: each column one box up to its highest block, whose cost
+ * is fixed by the footprint alone.
+ */
+export type MeshDetail = 'full' | 'cubes' | 'shell'
+
+/** Thrown by a pass the moment it goes over its budget, rather than after. */
+class OverBudget extends Error {}
+
+/** What every block is drawn as in `cubes` detail. */
+const CUBE_SHAPE: BlockShape = {
+  boxes: [{ x0: 0, y0: 0, z0: 0, x1: 1, y1: 1, z1: 1 }],
+  cross: false,
+  full: true
 }
 
 /**
@@ -238,6 +275,19 @@ function srgbToLinear(byte: number): number {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
 }
 
+/** The colour of a textured block, which takes its colour from the atlas instead. */
+const WHITE = [1, 1, 1] as const
+
+/** A block's flat colour in linear RGB, for when the atlas has no tile for it. */
+function linearColour(baseId: string): readonly [number, number, number] {
+  const hex = colourForBlock(baseId)
+  return [
+    srgbToLinear((hex >> 16) & 0xff),
+    srgbToLinear((hex >> 8) & 0xff),
+    srgbToLinear(hex & 0xff)
+  ]
+}
+
 /**
  * Classic voxel corner occlusion: a corner darkens with each of its three
  * neighbours that is solid, and two solid sides fully occlude it regardless of
@@ -400,29 +450,61 @@ function merge(first: ColumnMesh, second: ColumnMesh): ColumnMesh {
  * simply cease to be. A cut moving through the plot changes what is there in
  * the same sense, and is tagged the same way but shown differently: see
  * `ChangeStyle`.
+ *
+ * A plot that would go over `budget` faces is drawn in less detail instead, and
+ * without anything moving: see `MeshDetail`.
  */
 export function meshColumn(
   column: DecodedColumn,
   ceiling?: number,
   previous?: DecodedColumn,
   previousCeiling?: number,
-  style: ChangeStyle = 'grow'
+  style: ChangeStyle = 'grow',
+  budget: number = FACE_BUDGET
 ): ColumnMesh {
-  if (!previous) return meshPass(column, ceiling)
+  return (
+    withinBudget(() => meshChanges(column, ceiling, previous, previousCeiling, style, budget)) ??
+    withinBudget(() => meshPass(column, ceiling, { cubes: true, budget })) ??
+    meshShell(column, ceiling)
+  )
+}
+
+/** The mesh `draw` makes, or null if it went over its budget. */
+function withinBudget(draw: () => ColumnMesh): ColumnMesh | null {
+  try {
+    return draw()
+  } catch (error) {
+    if (error instanceof OverBudget) return null
+    throw error
+  }
+}
+
+/** Every block as it is, with whatever has arrived or gone tagged to move. */
+function meshChanges(
+  column: DecodedColumn,
+  ceiling: number | undefined,
+  previous: DecodedColumn | undefined,
+  previousCeiling: number | undefined,
+  style: ChangeStyle,
+  budget: number
+): ColumnMesh {
+  if (!previous) return meshPass(column, ceiling, { budget })
 
   const arriving = changedCells(column, ceiling, previous, previousCeiling)
-  const mesh = meshPass(column, ceiling, { changing: arriving, phase: 1, style })
+  const mesh = meshPass(column, ceiling, { changing: arriving, phase: 1, style, budget })
 
   const departing = changedCells(previous, previousCeiling, column, ceiling)
   if (departing.size === 0) return mesh
 
   // Drawn from the column as it was, because that is the only place the blocks
-  // that have gone still exist.
+  // that have gone still exist. What they cost comes out of the same budget:
+  // they are drawn alongside the plot, not instead of any of it.
   const ghosts = meshPass(previous, previousCeiling, {
     changing: departing,
     onlyChanging: true,
     phase: -1,
-    style
+    style,
+    budget: budget - mesh.faceCount
   })
 
   return merge(mesh, ghosts)
@@ -438,6 +520,10 @@ interface PassOptions {
   phase?: number
   /** Whether the changing blocks grow into place or fade. */
   style?: ChangeStyle
+  /** Draw every block as a plain cube, for `cubes` detail. */
+  cubes?: boolean
+  /** Faces this pass may emit before it gives up with `OverBudget`. */
+  budget?: number
 }
 
 function meshPass(
@@ -469,8 +555,7 @@ function meshPass(
    */
   const blocks = Uint8Array.from(faces, (tiles, index) =>
     occupies[index] === 1 &&
-    tiles.render === RenderClass.Opaque &&
-    isFullCube(palette[index])
+    (options.cubes === true || (tiles.render === RenderClass.Opaque && isFullCube(palette[index])))
       ? 1
       : 0
   )
@@ -534,16 +619,7 @@ function meshPass(
    * resolved once rather than per block.
    */
   const waterTiles = faceTilesForEntry('minecraft:water')
-  const waterLight: readonly [number, number, number] = waterTiles.textured
-    ? [1, 1, 1]
-    : (() => {
-        const hex = colourForBlock('minecraft:water')
-        return [
-          srgbToLinear((hex >> 16) & 0xff),
-          srgbToLinear((hex >> 8) & 0xff),
-          srgbToLinear(hex & 0xff)
-        ] as const
-      })()
+  const waterLight = waterTiles.textured ? WHITE : linearColour('minecraft:water')
 
   /** What covers a face of the water filling a waterlogged block. */
   const flooded = (x: number, y: number, z: number) => {
@@ -555,15 +631,9 @@ function meshPass(
   // Colour per palette index, resolved once and converted once. A textured
   // block carries plain white and takes its colour from the atlas; only blocks
   // the atlas has no tile for carry a colour of their own.
-  const paletteLinear = baseIds.map((id, index) => {
-    if (faces[index].textured) return [1, 1, 1] as const
-    const hex = colourForBlock(id)
-    return [
-      srgbToLinear((hex >> 16) & 0xff),
-      srgbToLinear((hex >> 8) & 0xff),
-      srgbToLinear(hex & 0xff)
-    ] as const
-  })
+  const paletteLinear = baseIds.map((id, index) =>
+    faces[index].textured ? WHITE : linearColour(id)
+  )
 
   // Tile bounds are shared by every face that samples the tile, so they are
   // worked out once per tile rather than once per face.
@@ -583,8 +653,9 @@ function meshPass(
    * pools against them, so those are worked out per block instead.
    */
   const fixedShapes = palette.map((entry) =>
-    shapeIsFixed(entry) ? shapeFor(entry, NOWHERE) : null
+    options.cubes === true ? CUBE_SHAPE : shapeIsFixed(entry) ? shapeFor(entry, NOWHERE) : null
   )
+  const maxVertices = (options.budget ?? Infinity) * 4
 
   // The block a shape is being worked out for, so the context below can answer
   // for its neighbours without a closure being built per block.
@@ -660,6 +731,7 @@ function meshPass(
           indexBuffer: number[],
           light: readonly [number, number, number]
         ) => {
+          if (vertexCount >= maxVertices) throw new OverBudget()
           const base = vertexCount
           for (let v = 0; v < 4; v++) {
             positions.push(corners[v * 3], corners[v * 3 + 1], corners[v * 3 + 2])
@@ -780,7 +852,11 @@ function meshPass(
 
         // Water in a waterlogged block is a block of water drawn round it, the
         // way the game draws one: the fence stands inside its own pond.
-        if (holdsWater[paletteIndex] === 1 && isWater[paletteIndex] === 0) {
+        if (
+          holdsWater[paletteIndex] === 1 &&
+          isWater[paletteIndex] === 0 &&
+          options.cubes !== true
+        ) {
           const brimming = inBounds(x, y + 1, z) && holdsWater[at(x, y + 1, z)] === 1
           emitBox(
             { x0: 0, y0: 0, z0: 0, x1: 1, y1: brimming ? 1 : LIQUID_SURFACE, z1: 1 },
@@ -804,6 +880,110 @@ function meshPass(
     opaqueIndexCount: opaqueIndices.length,
     blendedIndexCount: blendedIndices.length,
     faceCount: vertexCount / 4,
+    detail: options.cubes === true ? 'cubes' : 'full',
+    occupiedHeight,
+    surfaceLevel: findSurfaceLevel(column),
+    sizeX,
+    sizeY,
+    sizeZ,
+    minY
+  }
+}
+
+/**
+ * How tall each column of the plot stands: the layer just above its highest
+ * block, or 0 where there is nothing at all. Indexed `z * sizeX + x`. Blocks at
+ * or above `ceiling` are left out, as they are from the mesh.
+ */
+export function columnHeights(column: DecodedColumn, ceiling?: number): Uint16Array {
+  const { sizeX, sizeY, sizeZ, indices, occupies } = column
+  const top = Math.max(0, Math.min(sizeY, ceiling ?? sizeY))
+  const heights = new Uint16Array(sizeX * sizeZ)
+  for (let z = 0; z < sizeZ; z++) {
+    for (let x = 0; x < sizeX; x++) {
+      for (let y = top - 1; y >= 0; y--) {
+        if (occupies[indices[y * sizeX * sizeZ + z * sizeX + x]] !== 1) continue
+        heights[z * sizeX + x] = y + 1
+        break
+      }
+    }
+  }
+  return heights
+}
+
+/**
+ * Each column of the plot as one solid box, up to its highest block.
+ *
+ * The last resort, for a plot over the budget even as cubes: a solid shot
+ * through with holes. It keeps the plot's outline and what its top is made of,
+ * and its cost is set by the footprint alone - a top per column, and a wall on
+ * each side that stands above its neighbour, stretched over the whole drop
+ * rather than drawn a block at a time. Nothing is shaded or moves.
+ */
+function meshShell(column: DecodedColumn, ceiling?: number): ColumnMesh {
+  const { sizeX, sizeY, sizeZ, minY, indices, baseIds, palette } = column
+  const heights = columnHeights(column, ceiling)
+  const heightAt = (x: number, z: number) =>
+    x < 0 || x >= sizeX || z < 0 || z >= sizeZ ? 0 : heights[z * sizeX + x]
+
+  const faces = palette.map(faceTilesForEntry)
+  const positions: number[] = []
+  const normals: number[] = []
+  const colours: number[] = []
+  const uvs: number[] = []
+  const opaqueIndices: number[] = []
+  const blendedIndices: number[] = []
+  let vertexCount = 0
+  let occupiedHeight = 0
+
+  for (let z = 0; z < sizeZ; z++) {
+    for (let x = 0; x < sizeX; x++) {
+      const height = heights[z * sizeX + x]
+      if (height === 0) continue
+      occupiedHeight = Math.max(occupiedHeight, height)
+
+      // Drawn as whatever is on top of it.
+      const paletteIndex = indices[(height - 1) * sizeX * sizeZ + z * sizeX + x]
+      const block = faces[paletteIndex]
+      const light = block.textured ? WHITE : linearColour(baseIds[paletteIndex])
+      const into = block.render === RenderClass.Translucent ? blendedIndices : opaqueIndices
+
+      for (let f = 0; f < 6; f++) {
+        const face = FACES[f]
+        const [nx, ny, nz] = face.normal
+        // The bottom rests on the plot floor, as it does at every detail.
+        if (ny === -1) continue
+        // A wall only shows above its neighbour; the top spans no drop at all.
+        const foot = ny === 1 ? height : heightAt(x + nx, z + nz)
+        if (ny === 0 && foot >= height) continue
+
+        const tile = tileBounds(block.tiles[f])
+        const base = vertexCount
+        for (let v = 0; v < 4; v++) {
+          const [ox, oy, oz] = face.offsets[v]
+          const [a, b] = face.corners[v]
+          positions.push(x + ox - sizeX / 2, oy === 1 ? height : foot, z + oz - sizeZ / 2)
+          normals.push(nx * 127, ny * 127, nz * 127)
+          colours.push(light[0], light[1], light[2])
+          uvs.push(tile.u0 + (tile.u1 - tile.u0) * a, tile.v0 + (tile.v1 - tile.v0) * b)
+        }
+        into.push(base, base + 1, base + 2, base, base + 2, base + 3)
+        vertexCount += 4
+      }
+    }
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    normals: Int8Array.from(normals),
+    colours: Float32Array.from(colours),
+    uvs: Float32Array.from(uvs),
+    changes: new Float32Array(vertexCount),
+    indices: Uint32Array.from([...opaqueIndices, ...blendedIndices]),
+    opaqueIndexCount: opaqueIndices.length,
+    blendedIndexCount: blendedIndices.length,
+    faceCount: vertexCount / 4,
+    detail: 'shell',
     occupiedHeight,
     surfaceLevel: findSurfaceLevel(column),
     sizeX,
