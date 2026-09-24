@@ -7,6 +7,8 @@
  * the board is always full, which is the point.
  */
 
+import { Plane, Ray, Vector3, type Matrix4 } from 'three'
+
 /** Blocks of floor between one plot and the next, in both directions. */
 export const PLOT_GAP = 2
 
@@ -270,4 +272,136 @@ export function layoutGrid(
   }
 
   return cells
+}
+
+/** One drawn copy of a plot, as picking sees it. */
+export interface PickTarget {
+  /** Where the copy stands: moves and quarter turns only. */
+  toWorld: Matrix4
+  /** The inverse of `toWorld`. */
+  toLocal: Matrix4
+  sizeX: number
+  sizeZ: number
+  /** How tall each column stands, indexed `z * sizeX + x`: see `columnHeights`. */
+  heights: ArrayLike<number>
+}
+
+const floorPlane = new Plane(new Vector3(0, 1, 0))
+const floorCrossing = new Vector3()
+const localRay = new Ray()
+const hitPoint = new Vector3()
+const crossingHere = new Vector3()
+
+/**
+ * Which drawn copy a ray picks, as an index into `targets`, or null for none.
+ *
+ * Each copy is walked along the ray column by column and hit where the ray
+ * first drops below the top of one, which is exact for anything seen from above
+ * without testing a single triangle. The nearest hit wins.
+ *
+ * Most of a plot stands below the floor, and down there it can only be seen
+ * down its own shaft: a hit below `floorY` counts only if the ray came down
+ * through the floor inside that copy's footprint, since anywhere else the floor
+ * is in front of it. Null entries are copies not drawn.
+ */
+export function pickColumn(
+  ray: Ray,
+  targets: readonly (PickTarget | null)[],
+  floorY: number
+): number | null {
+  floorPlane.constant = -floorY
+  const crossing = ray.intersectPlane(floorPlane, floorCrossing)
+
+  let picked: number | null = null
+  let nearest = Infinity
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]
+    if (!target) continue
+    localRay.copy(ray).applyMatrix4(target.toLocal)
+    const t = marchColumns(localRay, target)
+    if (t === null) continue
+
+    hitPoint.copy(localRay.origin).addScaledVector(localRay.direction, t)
+    hitPoint.applyMatrix4(target.toWorld)
+    if (hitPoint.y < floorY) {
+      if (!crossing) continue
+      crossingHere.copy(crossing).applyMatrix4(target.toLocal)
+      const downOwnShaft =
+        Math.abs(crossingHere.x) <= target.sizeX / 2 && Math.abs(crossingHere.z) <= target.sizeZ / 2
+      if (!downOwnShaft) continue
+    }
+
+    const distance = hitPoint.distanceToSquared(ray.origin)
+    if (distance < nearest) {
+      nearest = distance
+      picked = i
+    }
+  }
+  return picked
+}
+
+/**
+ * Where along one axis a ray is over the span `[-half, half]`, as distances
+ * along it, or null if it never is.
+ */
+function overSpan(position: number, direction: number, half: number): [number, number] | null {
+  if (direction === 0) return Math.abs(position) <= half ? [-Infinity, Infinity] : null
+  const a = (-half - position) / direction
+  const b = (half - position) / direction
+  return [Math.min(a, b), Math.max(a, b)]
+}
+
+/**
+ * How far along a ray in a plot's own frame it first meets a column, or null.
+ *
+ * The frame is the mesher's: centred on the origin in x and z, standing on
+ * y = 0. Columns are visited in the order the ray crosses them, each a box from
+ * the bottom of the plot to its height.
+ */
+function marchColumns(ray: Ray, { sizeX, sizeZ, heights }: PickTarget): number | null {
+  const { origin, direction } = ray
+  const spanX = overSpan(origin.x, direction.x, sizeX / 2)
+  const spanZ = overSpan(origin.z, direction.z, sizeZ / 2)
+  if (!spanX || !spanZ) return null
+  let t = Math.max(0, spanX[0], spanZ[0])
+  const leave = Math.min(spanX[1], spanZ[1])
+  if (t >= leave) return null
+
+  // The column the ray comes in over, and where it crosses into the next one
+  // along each axis.
+  const column = (at: number, size: number) =>
+    Math.max(0, Math.min(size - 1, Math.floor(at + size / 2)))
+  let x = column(origin.x + direction.x * t, sizeX)
+  let z = column(origin.z + direction.z * t, sizeZ)
+  const stepX = direction.x > 0 ? 1 : -1
+  const stepZ = direction.z > 0 ? 1 : -1
+  const across = (cell: number, size: number, step: number, start: number, heading: number) =>
+    heading === 0 ? Infinity : (cell + (step > 0 ? 1 : 0) - size / 2 - start) / heading
+  let nextX = across(x, sizeX, stepX, origin.x, direction.x)
+  let nextZ = across(z, sizeZ, stepZ, origin.z, direction.z)
+  const everyX = direction.x === 0 ? Infinity : 1 / Math.abs(direction.x)
+  const everyZ = direction.z === 0 ? Infinity : 1 / Math.abs(direction.z)
+
+  while (x >= 0 && x < sizeX && z >= 0 && z < sizeZ && t < leave) {
+    const out = Math.min(nextX, nextZ, leave)
+    const height = heights[z * sizeX + x]
+    if (height > 0) {
+      const yIn = origin.y + direction.y * t
+      const yOut = origin.y + direction.y * out
+      // In through its side, down onto its top, or up into its bottom.
+      if (yIn >= 0 && yIn < height) return t
+      if (yIn >= height && yOut < height) return (height - origin.y) / direction.y
+      if (yIn < 0 && yOut >= 0) return -origin.y / direction.y
+    }
+    if (nextX < nextZ) {
+      x += stepX
+      t = nextX
+      nextX += everyX
+    } else {
+      z += stepZ
+      t = nextZ
+      nextZ += everyZ
+    }
+  }
+  return null
 }

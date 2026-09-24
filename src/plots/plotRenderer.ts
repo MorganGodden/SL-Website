@@ -13,6 +13,7 @@ import {
   EquirectangularReflectionMapping,
   Float32BufferAttribute,
   HalfFloatType,
+  Matrix4,
   Mesh,
   MeshDepthMaterial,
   MeshStandardMaterial,
@@ -42,6 +43,7 @@ import {
   CAMERA_ELEVATION,
   SCREEN_UP_ON_FLOOR,
   boardPitch,
+  pickColumn,
   wrapDistance
 } from './boardLayout'
 import { CHANGE_SECONDS, type ColumnMesh } from './mesher'
@@ -362,6 +364,8 @@ interface ColumnData {
   /** Footprint in blocks, which decides whether this plot needs a collar. */
   sizeX: number
   sizeZ: number
+  /** How tall each column stands, which is what picking tests against. */
+  heights: Uint16Array
 }
 
 /** One drawn copy of a plot. The lattice repeats, so a plot has many. */
@@ -541,8 +545,6 @@ export class PlotRenderer {
 
   private raycaster = new Raycaster()
   private pointer = new Vector2()
-  /** Scratch list for picking, reused so hover testing allocates nothing. */
-  private pickable: Mesh[] = []
 
   private viewHeight = 100
   /**
@@ -883,7 +885,7 @@ export class PlotRenderer {
    * The previous geometry is disposed explicitly. Without this the board leaks
    * GPU memory every few seconds for as long as it runs.
    */
-  setColumn(uuid: string, mesh: ColumnMesh): void {
+  setColumn(uuid: string, mesh: ColumnMesh & { heights: Uint16Array }): void {
     if (this.disposed) return
 
     const geometry = buildGeometry(mesh, this.seconds())
@@ -910,6 +912,7 @@ export class PlotRenderer {
       existing.minY = mesh.minY
       existing.sizeX = mesh.sizeX
       existing.sizeZ = mesh.sizeZ
+      existing.heights = mesh.heights
     } else {
       this.columns.set(uuid, {
         geometry,
@@ -917,7 +920,8 @@ export class PlotRenderer {
         surfaceLevel: mesh.surfaceLevel,
         minY: mesh.minY,
         sizeX: mesh.sizeX,
-        sizeZ: mesh.sizeZ
+        sizeZ: mesh.sizeZ,
+        heights: mesh.heights
       })
     }
 
@@ -1387,9 +1391,12 @@ export class PlotRenderer {
    * Index of the drawn copy under a pointer position given in CSS pixels
    * relative to the canvas, or null where the pointer is over bare floor.
    *
-   * Tests against the plot geometry itself rather than against the footprint on
-   * the floor plane: under an isometric camera a tall build covers the plots
-   * behind it, and the plot you are pointing at is the one you can see.
+   * Tests the plots as they stand rather than their footprints on the floor
+   * plane: under an isometric camera a tall build covers the plots behind it,
+   * and the plot you are pointing at is the one you can see. Tests how tall each
+   * column stands rather than the triangles, though: picking runs every frame,
+   * and a well dug plot is a hundred thousand triangles per copy the ray passes
+   * through. Only the air under an overhang reads as solid.
    */
   pickSlot(x: number, y: number): number | null {
     if (this.disposed) return null
@@ -1403,19 +1410,13 @@ export class PlotRenderer {
     // pick between the two would otherwise test last frame's placement.
     this.scene.updateMatrixWorld()
 
-    this.pickable.length = 0
-    for (const instance of this.instances) {
-      if (instance.uuid && instance.mesh.visible) this.pickable.push(instance.mesh)
-    }
-
-    const hits = this.raycaster.intersectObjects(this.pickable, false)
-    if (hits.length === 0) return null
-
-    const hit = hits[0].object
-    for (let i = 0; i < this.instances.length; i++) {
-      if (this.instances[i].mesh === hit) return i
-    }
-    return null
+    const targets = this.instances.map((instance) => {
+      const column = instance.uuid ? this.columns.get(instance.uuid) : undefined
+      if (!column || !instance.mesh.visible) return null
+      const toWorld = instance.mesh.matrixWorld
+      return { ...column, toWorld, toLocal: new Matrix4().copy(toWorld).invert() }
+    })
+    return pickColumn(this.raycaster.ray, targets, this.floorY)
   }
 
   /**

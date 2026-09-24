@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { Matrix4, Ray, Vector3 } from 'three'
 import {
   ASSUMED_PLOT_WIDTH,
   PLOT_GAP,
   SCREEN_UP_ON_FLOOR,
   boardPitch,
   layoutGrid,
+  pickColumn,
   pickStride,
   playerForCell,
   rescaleScroll,
@@ -389,5 +391,66 @@ describe('rescaleScroll', () => {
     expect(rescaleScroll(123, 18, 18)).toBe(123)
     expect(rescaleScroll(123, 0, 34)).toBe(123)
     expect(rescaleScroll(123, 18, 0)).toBe(123)
+  })
+})
+
+describe('pickColumn', () => {
+  const FLOOR = 1
+  /** A copy standing at (x, z), turned `turns` quarter turns, with one height per column. */
+  const plot = (
+    x: number,
+    z: number,
+    sizeX: number,
+    sizeZ: number,
+    heights: number[],
+    turns = 0
+  ) => {
+    const toWorld = new Matrix4().makeRotationY((turns * Math.PI) / 2).setPosition(x, 0, z)
+    return { toWorld, toLocal: toWorld.clone().invert(), sizeX, sizeZ, heights }
+  }
+  const flat = (height: number, count = 16) => new Array<number>(count).fill(height)
+  const ray = (from: [number, number, number], towards: [number, number, number]) =>
+    new Ray(new Vector3(...from), new Vector3(...towards).normalize())
+  // Along +x, dropping a quarter block a block: 2.0 to 3.0 over the plot at the
+  // origin, and down to the floor at x = 6, the middle of the plot beyond it.
+  const across = ray([-10, 5, 1.5], [1, -0.25, 0])
+
+  it('reaches past the low part of a plot to the one the ray comes down on', () => {
+    // A tower three blocks tall in the corner the ray never passes over.
+    const front = flat(1)
+    front[0] = 3
+    expect(pickColumn(across, [plot(0, 0, 4, 4, front), plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(1)
+  })
+
+  it('stops at a column that stands in the way', () => {
+    const front = flat(1)
+    front[3 * 4 + 3] = 3 // row z = 3, which the ray runs along, at x = 1..2
+    expect(pickColumn(across, [plot(0, 0, 4, 4, front), plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(0)
+  })
+
+  it('does not reach a plot through the floor beside it', () => {
+    // Dug below a floor at 10; crosses the floor at x = -1, short of the plot at 0..4.
+    const dug = plot(2, 0, 4, 4, flat(9))
+    expect(pickColumn(ray([-3, 14, 0], [1, -2, 0]), [dug], 10)).toBeNull()
+  })
+
+  it('reaches a plot dug below the floor down its own shaft', () => {
+    const dug = plot(2, 0, 4, 4, flat(9))
+    expect(pickColumn(ray([2, 20, 0], [0, -1, 0]), [dug], 10)).toBe(0)
+  })
+
+  it('finds a column where the quarter turn has put it', () => {
+    // 4 x 2, one tall column at local (3, 0), which a quarter turn puts at (-0.5, -1.5).
+    const heights = [0, 0, 0, 5, 0, 0, 0, 0]
+    const turned = plot(0, 0, 4, 2, heights, 1)
+    expect(pickColumn(ray([-0.5, 20, -1.5], [0, -1, 0]), [turned], FLOOR)).toBe(0)
+    // Where it would be unturned is outside the turned footprint altogether.
+    expect(pickColumn(ray([1.5, 20, -0.5], [0, -1, 0]), [turned], FLOOR)).toBeNull()
+  })
+
+  it('skips copies that are not drawn and keeps the others where they are', () => {
+    const drawn = plot(0, 0, 4, 4, flat(2))
+    expect(pickColumn(ray([0, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBe(1)
+    expect(pickColumn(ray([20, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBeNull()
   })
 })
