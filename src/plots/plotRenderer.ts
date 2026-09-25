@@ -138,14 +138,18 @@ const GLINT_SHEEN = 0.08
 const GLINT_BASE = 0.05
 
 /**
- * The depth of field, in world units either side of whatever the camera is
- * looking at, and the widest the blur is allowed to get in CSS pixels.
+ * The depth of field, in lattice pitches either side of whatever the camera
+ * is looking at, and the widest the blur is allowed to get in CSS pixels.
  *
  * An orthographic camera at isometric angles turns a plane of focus into a
  * diagonal band across the screen, which is what a tilt-shift lens does to a
  * real scene and why a board shot this way reads as a model of itself.
+ *
+ * In pitches because the board is framed by its pitch: plots are a server
+ * setting, and a board of bigger ones is the same picture from further out.
+ * Set by eye at 26 units on a board of one-chunk plots, 18 units apart.
  */
-const DOF_RANGE = 26
+const DOF_RANGE = 26 / 18
 const DOF_RADIUS = 5.5
 /** Taps in the blur. Enough for a smooth disc at that radius. */
 const DOF_TAPS = 12
@@ -490,6 +494,8 @@ export class PlotRenderer {
   /** The middle of the plot it is going to, and the height it frames it at. */
   private focusCentre = new Vector3()
   private focusHeight = 0
+  /** How far the plot reaches from that middle in any direction: its bounding sphere. */
+  private focusRadius = 0
   /** Room kept clear either side of a focused plot for the controls around it. */
   private focusReserve: FocusReserve = { x: 0, y: 0 }
   /** The focused plot's size on screen at rest, and the gutter kept round it. */
@@ -1177,6 +1183,7 @@ export class PlotRenderer {
     const restPerPixel = (Math.min(fit, this.baseHeight) * 2) / height
     this.focusRest = { width: across / restPerPixel, height: tall / restPerPixel, gutter }
     this.focusCentre.set(focused.mesh.position.x, (base + top) / 2, focused.mesh.position.z)
+    this.focusRadius = Math.hypot(this.columnWidth / Math.SQRT2, (top - base) / 2)
 
     // The surface and whatever stands on it are already on screen and stay
     // solid; everything under them fades up from nothing, the top of it first.
@@ -1720,6 +1727,12 @@ export class PlotRenderer {
     // Measured the way the depth buffer reads: down the camera's own axis, and
     // negative in front of it.
     uniforms.uFocus.value = -this.camera.position.distanceTo(this.target)
+    uniforms.uRange.value = DOF_RANGE * this.spacing
+    // A plot on the stage is sharp from its nearest corner to its farthest.
+    // Focused on its middle alone, the corner coming at the camera stood far
+    // enough in front of the plane to go soft. The sharp zone grows with the
+    // camera's way in, so the board behind still falls away as it goes.
+    uniforms.uSharp.value = this.focusRadius * this.focusEase
     uniforms.uNear.value = this.camera.near
     uniforms.uFar.value = this.camera.far
     uniforms.uTexel.value.set(1 / this.sceneTarget.width, 1 / this.sceneTarget.height)
@@ -1887,6 +1900,7 @@ function buildDofMaterial(): ShaderMaterial {
       uNear: { value: 0 },
       uFar: { value: 0 },
       uRange: { value: DOF_RANGE },
+      uSharp: { value: 0 },
       uRadius: { value: DOF_RADIUS }
     },
     depthTest: false,
@@ -1910,15 +1924,17 @@ function buildDofMaterial(): ShaderMaterial {
       uniform float uNear;
       uniform float uFar;
       uniform float uRange;
+      uniform float uSharp;
       uniform float uRadius;
 
       varying vec2 vUv;
 
-      // How far out of focus one point is, from nothing to fully blurred.
+      // How far out of focus one point is, from nothing to fully blurred:
+      // nothing within uSharp of the plane of focus, fully uRange past that.
       float confusion(vec2 uv) {
         float depth = texture2D(tDepth, uv).x;
         float viewZ = orthographicDepthToViewZ(depth, uNear, uFar);
-        return clamp(abs(viewZ - uFocus) / uRange, 0.0, 1.0);
+        return clamp((abs(viewZ - uFocus) - uSharp) / uRange, 0.0, 1.0);
       }
 
       void main() {
