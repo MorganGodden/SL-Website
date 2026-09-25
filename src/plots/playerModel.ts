@@ -19,6 +19,7 @@ import {
   MeshLambertMaterial,
   NearestFilter,
   SRGBColorSpace,
+  ShaderChunk,
   type Material
 } from 'three'
 
@@ -284,6 +285,33 @@ function toTexture(pixels: SkinPixels): CanvasTexture {
 }
 
 /**
+ * Samples the skin only from inside the face being drawn.
+ *
+ * Antialiasing shades a pixel on a face's outline once, for all of its
+ * samples, from the middle of the pixel - which can lie just outside the face,
+ * where its texture coordinates carry on into the next part of the skin. A face
+ * of the outer layer, mostly clear, then gets a hairline of whatever is painted
+ * beside it in the texture, floating off the player along its edge. Centroid
+ * sampling takes the coordinates from inside the face instead.
+ */
+function sampleInside(material: MeshLambertMaterial): MeshLambertMaterial {
+  const centroid = (chunk: string) =>
+    chunk.replace('varying vec2 vMapUv;', 'centroid varying vec2 vMapUv;')
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <uv_pars_vertex>',
+      centroid(ShaderChunk.uv_pars_vertex)
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <uv_pars_fragment>',
+      centroid(ShaderChunk.uv_pars_fragment)
+    )
+  }
+  material.customProgramCacheKey = () => 'skin-centroid'
+  return material
+}
+
+/**
  * The two materials a skin is drawn with.
  *
  * The inner layer is solid whatever its pixels say, as it is in the game: a
@@ -299,13 +327,17 @@ export function skinMaterials(skin: Skin): {
   for (let i = 3; i < solid.length; i += 4) solid[i] = 255
 
   return {
-    inner: new MeshLambertMaterial({ map: toTexture({ ...skin.pixels, data: solid }) }),
-    outer: new MeshLambertMaterial({
-      map: toTexture(skin.pixels),
-      transparent: true,
-      alphaTest: 1e-5,
-      side: DoubleSide
-    })
+    inner: sampleInside(
+      new MeshLambertMaterial({ map: toTexture({ ...skin.pixels, data: solid }) })
+    ),
+    outer: sampleInside(
+      new MeshLambertMaterial({
+        map: toTexture(skin.pixels),
+        transparent: true,
+        alphaTest: 1e-5,
+        side: DoubleSide
+      })
+    )
   }
 }
 
