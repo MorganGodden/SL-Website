@@ -4,11 +4,10 @@ import {
   ASSUMED_PLOT_WIDTH,
   PLOT_GAP,
   SCREEN_UP_ON_FLOOR,
-  NO_INSETS,
+  besidePlot,
   boardPitch,
+  focusGutter,
   focusUnitsPerPixel,
-  insetFrustum,
-  insetsThatFit,
   layoutGrid,
   pickColumn,
   pickStride,
@@ -481,59 +480,53 @@ describe('pickColumn', () => {
   })
 })
 
-describe('focus framing around panels', () => {
-  const W = 1600
-  const H = 900
-  const PANEL = { left: 280, right: 110, top: 0, bottom: 0 }
+describe('focus framing around the controls', () => {
+  const W = 1280
+  const H = 720
+  const NONE = { x: 0, y: 0 }
+  // The skin column is the wider of the two, and a centred plot keeps its
+  // width clear on both sides.
+  const SIDES = { x: 16 + 192, y: 0 }
 
-  it('matches the old whole-canvas fit when nothing is inset', () => {
+  it('matches the old whole-canvas fit when nothing is reserved', () => {
     const across = 45
     const tall = 48
     const old = Math.max(tall / 2, across / (2 * (W / H))) * 1.24
-    expect((focusUnitsPerPixel(across, tall, W, H, NO_INSETS, 1.24) * H) / 2).toBeCloseTo(old)
+    const gutter = focusGutter(W, H, 1.24)
+    expect((focusUnitsPerPixel(across, tall, W, H, NONE, gutter) * H) / 2).toBeCloseTo(old)
   })
 
-  it('fits the plot to the free rectangle, not the canvas', () => {
-    // Wide enough that the width is the limiting side once the panels are in.
-    const across = 120
-    const perPixel = focusUnitsPerPixel(across, 10, W, H, PANEL, 1)
-    expect(across / perPixel).toBeCloseTo(W - PANEL.left - PANEL.right)
+  it('keeps one gutter above and below a plot fitted to the height', () => {
+    const gutter = focusGutter(W, H, 1.24)
+    const perPixel = focusUnitsPerPixel(45, 48, W, H, SIDES, gutter)
+    expect(48 / perPixel + 2 * gutter).toBeCloseTo(H)
   })
 
-  it('puts what the camera looks at in the middle of the free rectangle', () => {
-    // Where the view axis lands on the canvas, in pixels from the top left.
-    const centreOf = (f: ReturnType<typeof insetFrustum>) => ({
-      x: ((0 - f.left) / (f.right - f.left)) * W,
-      y: ((f.top - 0) / (f.top - f.bottom)) * H
-    })
-    const sheet = { left: 0, right: 90, top: 0, bottom: 160 }
-
-    expect(centreOf(insetFrustum(40, W, H, PANEL, 1)).x).toBeCloseTo(
-      PANEL.left + (W - PANEL.left - PANEL.right) / 2
-    )
-    expect(centreOf(insetFrustum(40, W, H, sheet, 1)).y).toBeCloseTo((H - sheet.bottom) / 2)
-    // Not slid at all before the camera has set off, so the board is untouched.
-    expect(centreOf(insetFrustum(40, W, H, PANEL, 0))).toEqual({ x: W / 2, y: H / 2 })
+  it('fits a wide plot between the reserves, one gutter clear of each', () => {
+    const gutter = focusGutter(W, H, 1.24)
+    const perPixel = focusUnitsPerPixel(300, 48, W, H, SIDES, gutter)
+    expect(300 / perPixel).toBeCloseTo(W - 2 * (SIDES.x + gutter))
   })
 
-  it('centres a plot too wide for the room beside the panels on the screen instead', () => {
-    // A 32 block plot on a portrait phone, at the board's own framing: 416px
-    // across a 390px screen, with a 110px slice rail and a 154px sheet.
-    const sheet = { left: 0, right: 110, top: 0, bottom: 154 }
-    const perPixel = 45.25 / 416
-    expect(insetsThatFit(45.25, 54, perPixel, 390, 844, sheet)).toEqual({
-      left: 0,
-      right: 0,
-      top: 0,
-      bottom: 154
-    })
-    // The same plot on a desktop fits beside both panels, so keeps them.
-    expect(insetsThatFit(45.25, 54, 45.25 / 490, W, H, PANEL)).toEqual(PANEL)
+  it('stands a control one gutter from the plot, on either side', () => {
+    const plot = 490
+    const gutter = 70
+    const left = besidePlot(W, plot, gutter, 192, 16, true)
+    const right = besidePlot(W, plot, gutter, 60, 16, false)
+    // The plot is centred on the screen, whatever stands beside it.
+    const plotLeft = W / 2 - plot / 2
+    const plotRight = W / 2 + plot / 2
+    expect(plotLeft - (left + 192)).toBeCloseTo(gutter)
+    expect(right - plotRight).toBeCloseTo(gutter)
   })
 
-  it('keeps the view the height it was asked for', () => {
-    const f = insetFrustum(40, W, H, PANEL, 0.6)
-    expect(f.top - f.bottom).toBeCloseTo(80)
-    expect(f.right - f.left).toBeCloseTo((80 * W) / H)
+  it('stops a control at the edge when the plot leaves it no room', () => {
+    // Drawn bigger than the room, as the board's framing can: the control
+    // keeps to the screen rather than hugging the plot off the end of it.
+    expect(besidePlot(W, 1100, 70, 192, 16, true)).toBe(16)
+    expect(besidePlot(W, 1100, 70, 60, 16, false)).toBe(W - 16 - 60)
+    // Above the plot, the edge to keep clear of is the leaderboard's bar.
+    expect(besidePlot(844, 494, 38, 40, 80, true)).toBe(97)
+    expect(besidePlot(844, 700, 38, 40, 80, true)).toBe(80)
   })
 })

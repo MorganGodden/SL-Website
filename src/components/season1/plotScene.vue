@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useMediaQuery, useResizeObserver } from '@vueuse/core'
-import Slider from 'primevue/slider'
 import PlayerPanel from '@/components/season1/playerPanel.vue'
 import { PlotRenderer, type RenderSlot } from '@/plots/plotRenderer'
 import { PlotBoard, type BoardStatus } from '@/plots/plotBoard'
@@ -9,15 +8,13 @@ import { resolvePlot } from '@/plots/plotLink'
 import { plotsConfigured } from '@/plots/plotsClient'
 import {
   ASSUMED_PLOT_WIDTH,
-  NO_INSETS,
   SCROLL_DIRECTION,
   boardPitch,
   layoutGrid,
   pickStride,
   rescaleScroll,
   screenDeltaToWorld,
-  widestPlot,
-  type ScreenInsets
+  widestPlot
 } from '@/plots/boardLayout'
 import type { DecodeSuccess } from '@/plots/decode.worker'
 import type { LeaderboardEntry, PlayerRef } from '@/common/interfaces'
@@ -139,6 +136,12 @@ const ZOOM_PER_PIXEL = 0.0012
  */
 const COVERED_ZOOM = 0.9
 const COVER_TAU_MS = 110
+/**
+ * How far down the screen the leaderboard's folded bar reaches. A focused plot
+ * keeps the same room clear above it as below, so it is kept clear of the bar
+ * by whichever of the two is the taller: the bar, or the card under the plot.
+ */
+const BAR_CLEARANCE = 80
 
 /**
  * A drawn copy of a plot, tagged with the lattice cell it sits in.
@@ -188,6 +191,8 @@ interface FocusState {
   cut: number
   /** Layers the plot has anything in at all. */
   layers: number
+  /** Layer index of the plot's grass, which the rail marks. */
+  surface: number
   /** World y of the topmost layer still drawn. */
   worldY: number
 }
@@ -197,16 +202,10 @@ const message = ref<string | null>('Connecting...')
 const hovered = shallowRef<Label | null>(null)
 /** Non-null while a plot is on the stage, which is what puts its controls up. */
 const focus = shallowRef<FocusState | null>(null)
-/**
- * Which way round the focused plot's panels go: the player down the left of a
- * landscape screen, where a plot fitted to the height leaves room either side,
- * and along the bottom of a portrait one, where it leaves room above and below.
- */
+/** Which gestures the card under a focused plot offers, and how it is laid out. */
 const landscape = useMediaQuery('(orientation: landscape)')
-/** The panels around a focused plot, measured so the plot can be kept clear of them. */
-const playerBox = ref<HTMLElement | null>(null)
-const sliceBox = ref<HTMLElement | null>(null)
-const insets = ref<ScreenInsets>(NO_INSETS)
+/** The card under a focused plot, measured so the plot is framed clear of it. */
+const cardBox = ref<HTMLElement | null>(null)
 
 let renderer: PlotRenderer | null = null
 let board: PlotBoard | null = null
@@ -1032,6 +1031,7 @@ function takeFocus(key: string, uuid: string): void {
     ...neighbours(uuid),
     cut: sliceDrawn,
     layers: column.occupiedHeight,
+    surface: column.surfaceLevel,
     worldY: column.minY + sliceDrawn - 1
   }
 
@@ -1059,28 +1059,19 @@ function playerRef(uuid: string | undefined): PlayerRef | null {
 }
 
 /**
- * Hands the renderer the room the panels take, so the plot is fitted to what
- * is left of the screen and centred in it rather than under a panel.
- *
- * Measured by layout size rather than on-screen position, so a panel caught
- * sliding in is measured where it is going. While the panels are gone the last
- * measurement stands: the camera is still pulling out, and it pulls out from
- * the framing it went in with.
+ * Tells the renderer how much room the card takes along the bottom, which the
+ * plot keeps clear of - and the same again at the top, since it stays in the
+ * middle of the window. The card's height only changes with the screen.
  */
-function measureInsets(): void {
-  const player = playerBox.value
-  const slice = sliceBox.value
-  if (!player || !slice) return
-
-  insets.value = landscape.value
-    ? { left: player.offsetWidth, right: slice.offsetWidth, top: 0, bottom: 0 }
-    : { left: 0, right: slice.offsetWidth, top: 0, bottom: player.offsetHeight }
-  renderer?.setFocusInsets(insets.value)
+function measureControls(): void {
+  const card = cardBox.value
+  if (!card) return
+  renderer?.setFocusReserve({ x: 0, y: Math.max(card.offsetHeight, BAR_CLEARANCE) })
   needsRender = true
 }
 
-useResizeObserver([playerBox, sliceBox], measureInsets)
-watch(landscape, measureInsets, { flush: 'post' })
+useResizeObserver(cardBox, measureControls)
+watch(landscape, measureControls, { flush: 'post' })
 
 /**
  * The drawn copy under the pointer, picked on the spot if hovering has not
@@ -1250,93 +1241,39 @@ onBeforeUnmount(() => {
     </div>
 
     <!--
-      The focused plot's own controls. The board behind it has washed out to sky
-      by the time these are up, so they are laid out for that rather than for
-      the board.
+      The focused plot's card, pinned along the bottom in the same glass as the
+      leaderboard. The board behind has washed out to sky by the time it is up.
+      It comes down out of the plot as it arrives and goes back up into it as
+      it leaves.
+
+      Nothing done on it reaches the board: a click there is not a click to go
+      back, and turning the skin is not spinning the plot. The wheel still
+      zooms, and slices with Ctrl held, as it does anywhere over a focused plot.
     -->
-    <Transition name="plot-card">
+    <Transition name="focus-ui" :duration="{ enter: 220, leave: 160 }">
       <div
         v-if="focus && !covered"
-        class="pointer-events-none absolute inset-0"
+        ref="cardBox"
+        class="dock pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4"
         @pointerdown.stop
         @pointerup.stop
+        @pointermove.stop
       >
-        <!--
-          Its owner. Nothing done on the panel reaches the board: a click there
-          is not a click to go back, a scroll is not a zoom, and turning the
-          skin is not spinning the plot. Down the side it is centred below the
-          leaderboard's folded bar, which a short landscape screen would
-          otherwise put over the top of it.
-        -->
-        <div
-          ref="playerBox"
-          class="player-slide absolute flex"
-          :class="
-            landscape
-              ? 'player-slide--side inset-y-0 left-0 items-center px-3 pb-3 pt-20 sm:px-4 sm:pb-4'
-              : 'player-slide--bottom inset-x-0 bottom-0 p-3 sm:p-4'
-          "
-          @pointermove.stop
-          @wheel.stop.prevent
-        >
-          <PlayerPanel
-            class="pointer-events-auto"
-            :uuid="focus.uuid"
-            :name="focus.name"
-            :score="focus.score"
-            :rank="focus.rank"
-            :medal="focus.medal"
-            :prev="focus.prev"
-            :next="focus.next"
-            :landscape="landscape"
-            @step="focusPlayer"
-          />
-        </div>
-
-        <!-- Sized to the screen's height too, so a short landscape screen keeps all of it. -->
-        <div
-          ref="sliceBox"
-          class="absolute right-0 top-0 flex items-center px-4 pb-4 pt-20 sm:px-6 sm:pb-6"
-          :style="{ bottom: insets.bottom + 'px' }"
-        >
-          <div
-            class="pointer-events-auto flex flex-col items-center gap-3 rounded-xl border border-white/60 bg-white/55 px-3 py-4 backdrop-blur-sm"
-          >
-            <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              Slice
-            </span>
-            <Slider
-              :model-value="focus.cut"
-              orientation="vertical"
-              :min="1"
-              :max="focus.layers"
-              class="h-[clamp(6rem,calc(100dvh-16rem),10rem)] sm:h-[clamp(6rem,calc(100dvh-16rem),14rem)]"
-              aria-label="Slice height"
-              @update:model-value="setSlice(Number($event))"
-            />
-            <span class="text-xs font-semibold tabular-nums text-slate-800">Y {{ focus.worldY }}</span>
-            <button
-              class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500 transition-colors hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-600 disabled:opacity-40"
-              :disabled="focus.cut === focus.layers"
-              @click="setSlice(focus.layers)"
-            >
-              Whole
-            </button>
-          </div>
-        </div>
-
-        <!-- Under the plot, in the middle of the room the panels leave it. -->
-        <p
-          class="absolute px-4 pb-4 text-center text-[11px] text-slate-600 sm:pb-6"
-          :style="{
-            left: insets.left + 'px',
-            right: insets.right + 'px',
-            bottom: insets.bottom + 'px'
-          }"
-        >
-          Drag to spin &middot; scroll to zoom &middot; Ctrl + scroll to slice &middot; click
-          anywhere to go back
-        </p>
+        <PlayerPanel
+          class="pointer-events-auto"
+          :uuid="focus.uuid"
+          :name="focus.name"
+          :score="focus.score"
+          :rank="focus.rank"
+          :medal="focus.medal"
+          :prev="focus.prev"
+          :next="focus.next"
+          :slice="focus"
+          :landscape="landscape"
+          @step="focusPlayer"
+          @slice="setSlice"
+          @back="releaseFocus"
+        />
       </div>
     </Transition>
 
@@ -1378,33 +1315,47 @@ onBeforeUnmount(() => {
 }
 
 /*
- * The player's panel slides in from the edge it stands on as it fades, and
- * back out to it the same way, keeping pace with the fade in each direction.
+ * Out of the plot on the way in, back into it on the way out: the card starts
+ * a little way up towards the plot, slightly small, and settles down into
+ * place. Leaving is quicker - the plot is already going back.
  */
-.player-slide {
-  transition: transform 110ms ease-out;
+.dock {
+  transition:
+    opacity 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.plot-card-leave-active .player-slide {
-  transition: transform 90ms ease-in;
+.focus-ui-leave-active.dock {
+  transition-duration: 160ms;
 }
 
-.plot-card-enter-from .player-slide--side,
-.plot-card-leave-to .player-slide--side {
-  transform: translateX(-1rem);
+/* Closer to the edge on a phone on its side, where every pixel of height counts. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .dock {
+    padding-bottom: 0.75rem;
+  }
 }
 
-.plot-card-enter-from .player-slide--bottom,
-.plot-card-leave-to .player-slide--bottom {
-  transform: translateY(1rem);
+.focus-ui-enter-from.dock,
+.focus-ui-leave-to.dock {
+  opacity: 0;
+  transform: translateY(-0.75rem) scale(0.97);
 }
 
+/* Fewer and gentler, not none: the card still fades, it just doesn't travel. */
 @media (prefers-reduced-motion: reduce) {
   .plot-card-enter-active,
-  .plot-card-leave-active,
-  .player-slide,
-  .plot-card-leave-active .player-slide {
+  .plot-card-leave-active {
     transition: none;
+  }
+
+  .dock {
+    transition: opacity 150ms ease;
+  }
+
+  .focus-ui-enter-from.dock,
+  .focus-ui-leave-to.dock {
+    transform: none;
   }
 }
 </style>

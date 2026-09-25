@@ -41,15 +41,13 @@ import { faceTilesForEntry, tilePixelRect } from './blockAtlas'
 import {
   ASSUMED_PLOT_WIDTH,
   CAMERA_ELEVATION,
-  NO_INSETS,
   SCREEN_UP_ON_FLOOR,
   boardPitch,
+  focusGutter,
   focusUnitsPerPixel,
-  insetFrustum,
-  insetsThatFit,
   pickColumn,
   wrapDistance,
-  type ScreenInsets
+  type FocusReserve
 } from './boardLayout'
 import { CHANGE_SECONDS, type ColumnMesh } from './mesher'
 
@@ -84,10 +82,12 @@ const GROUND_BLOCK = 'minecraft:white_concrete'
 const CUTOUT_ALPHA = 0.5
 
 /**
- * How much room is left around a plot the camera has come in on.
+ * How much room is left around a plot the camera has come in on, as a factor
+ * of the plot's own extent along the screen's short side.
  *
  * Nothing moves the plot for a focus: the camera goes to it, and this is the
- * only thing deciding how much of the screen it ends up filling.
+ * only thing deciding how much of the screen it ends up filling. The gap it
+ * leaves there is the gap kept on every side, the panels beside it included.
  */
 const FOCUS_MARGIN = 1.24
 
@@ -490,10 +490,10 @@ export class PlotRenderer {
   /** The middle of the plot it is going to, and the height it frames it at. */
   private focusCentre = new Vector3()
   private focusHeight = 0
-  /** Screen edges a focused plot is kept clear of, for the panels standing on them. */
-  private focusInsets: ScreenInsets = NO_INSETS
-  /** The part of those the plot actually fits beside, which is what it is centred by. */
-  private focusFrame: ScreenInsets = NO_INSETS
+  /** Room kept clear either side of a focused plot for the controls around it. */
+  private focusReserve: FocusReserve = { x: 0, y: 0 }
+  /** The focused plot's size on screen at rest, and the gutter kept round it. */
+  private focusRest: { width: number; height: number; gutter: number } | null = null
   /**
    * How far the focused plot has faded in, and the two heights that fade spans.
    *
@@ -1159,9 +1159,8 @@ export class PlotRenderer {
     // diagonal, flattened, is most of what it measures up it.
     const across = this.columnWidth * Math.SQRT2
     const tall = (top - base) * HEIGHT_UP + across * FLOOR_UP
-    const fit =
-      (focusUnitsPerPixel(across, tall, width, height, this.focusInsets, FOCUS_MARGIN) * height) /
-      2
+    const gutter = focusGutter(width, height, FOCUS_MARGIN)
+    const fit = (focusUnitsPerPixel(across, tall, width, height, this.focusReserve, gutter) * height) / 2
 
     // Never further out than the board's own framing. The ground patch and the
     // lattice are cut for that, and a tower tall enough to want more would show
@@ -1172,17 +1171,11 @@ export class PlotRenderer {
     // still works on a focused plot rather than being swallowed by a fit that
     // never changes.
     this.focusHeight = Math.min(fit / this.zoom, this.boardHeight)
-    // Decided at the framing the plot is fitted at rather than the zoomed one,
-    // so zooming in never throws the plot from one side of the screen to the
-    // middle; zoomed in far enough, it simply grows out under the panels.
-    this.focusFrame = insetsThatFit(
-      across,
-      tall,
-      (Math.min(fit, this.baseHeight) * 2) / height,
-      width,
-      height,
-      this.focusInsets
-    )
+    // The controls around it are placed against the plot as it is framed
+    // before any zoom, and seen corner on - its widest - so they hold still
+    // while it is zoomed or spun and move only when the plot itself changes.
+    const restPerPixel = (Math.min(fit, this.baseHeight) * 2) / height
+    this.focusRest = { width: across / restPerPixel, height: tall / restPerPixel, gutter }
     this.focusCentre.set(focused.mesh.position.x, (base + top) / 2, focused.mesh.position.z)
 
     // The surface and whatever stands on it are already on screen and stay
@@ -1264,25 +1257,32 @@ export class PlotRenderer {
   }
 
   /**
+   * The focused plot's size on screen before any zoom, seen corner on, and the
+   * gutter kept round it, all in CSS pixels; null until a plot has been
+   * focused. Kept from the last plot framed, so a frame in which the focused
+   * copy is not drawn yet does not throw the controls around it out of place.
+   */
+  get focusExtent(): { width: number; height: number; gutter: number } | null {
+    return this.focusRest
+  }
+
+  /**
+   * Room to keep clear either side of a focused plot for the controls around
+   * it, in CSS pixels. The plot stays in the middle of the screen and is
+   * fitted to what is left.
+   */
+  setFocusReserve(reserve: FocusReserve): void {
+    if (this.disposed) return
+    this.focusReserve = { ...reserve }
+    this.invalidate()
+  }
+
+  /**
    * How far the camera has been swung round the focused plot, in radians.
    *
    * The camera turns rather than the plot, because the plot is standing in a
    * square hole: one spun in place would put its corners through the walls.
    */
-  /**
-   * How much of each screen edge the panels around a focused plot take up, in
-   * CSS pixels. The plot is fitted to what is left and centred in it.
-   *
-   * Only a focus uses these: the board itself runs under the panels, which is
-   * what makes them read as glass over it.
-   */
-  setFocusInsets(insets: ScreenInsets): void {
-    if (this.disposed) return
-    this.focusInsets = { ...insets }
-    this.updateCamera()
-    this.invalidate()
-  }
-
   setFocusSpin(radians: number): void {
     if (this.disposed || this.focusSpin === radians) return
     this.focusSpin = radians
@@ -1559,19 +1559,13 @@ export class PlotRenderer {
     this.viewHeight = board + (this.focusHeight - board) * this.focusEase
     this.target.lerpVectors(this.boardTarget, this.focusCentre, this.focusEase)
 
-    // Slid across as the camera comes in, so the plot ends up in the middle of
-    // whatever the panels beside it leave free rather than under one of them.
-    const frustum = insetFrustum(
-      this.viewHeight,
-      this.canvas.clientWidth || 1,
-      this.canvas.clientHeight || 1,
-      this.focusFrame,
-      this.focusEase
-    )
-    this.camera.left = frustum.left
-    this.camera.right = frustum.right
-    this.camera.top = frustum.top
-    this.camera.bottom = frustum.bottom
+    const halfHeight = this.viewHeight
+    const halfWidth = halfHeight * aspect
+
+    this.camera.left = -halfWidth
+    this.camera.right = halfWidth
+    this.camera.top = halfHeight
+    this.camera.bottom = -halfHeight
 
     this.camera.position
       .copy(CAMERA_DIRECTION)

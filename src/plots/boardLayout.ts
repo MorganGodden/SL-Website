@@ -401,89 +401,68 @@ function marchBlocks(ray: Ray, { sizeX, sizeY, sizeZ, solid }: PickTarget): numb
   return null
 }
 
-/** Room kept clear along each edge of the canvas, in CSS pixels. */
-export interface ScreenInsets {
-  left: number
-  right: number
-  top: number
-  bottom: number
+/**
+ * Room kept clear for the controls around a focused plot, in CSS pixels: `x`
+ * on the left and again on the right, `y` above and again below.
+ *
+ * The same on both sides of each axis, always. The plot is centred on the
+ * window, so whatever one side needs the other has to give up as well.
+ */
+export interface FocusReserve {
+  x: number
+  y: number
 }
 
-export const NO_INSETS: ScreenInsets = { left: 0, right: 0, top: 0, bottom: 0 }
+/**
+ * The room a focused plot keeps clear on every side, in CSS pixels.
+ *
+ * It is what fitting the plot to the screen's short side with `margin` leaves
+ * above and below it, and the same gap is then kept to the sides and to the
+ * controls beside it: one gap all round, rather than a fraction of whichever
+ * side happens to be longer.
+ */
+export function focusGutter(width: number, height: number, margin: number): number {
+  return (Math.min(width, height) * (1 - 1 / margin)) / 2
+}
 
 /**
- * World units per CSS pixel that fit a focused plot into what the insets leave
- * of the canvas, with `margin` to spare along whichever side it fills first.
+ * World units per CSS pixel that fit a focused plot into the middle of the
+ * canvas, clear of `reserve` and with `gutter` pixels to spare on every side.
  *
- * `across` and `tall` are the plot's extent on screen, in world units. It is
- * fitted to the free rectangle rather than to the canvas: a panel along one
- * edge is room the plot cannot use, and fitting it to the whole canvas would
- * put part of it under the panel.
+ * `across` and `tall` are the plot's extent on screen, in world units.
  */
 export function focusUnitsPerPixel(
   across: number,
   tall: number,
   width: number,
   height: number,
-  insets: ScreenInsets,
-  margin: number
+  reserve: FocusReserve,
+  gutter: number
 ): number {
-  const freeWidth = Math.max(width - insets.left - insets.right, 1)
-  const freeHeight = Math.max(height - insets.top - insets.bottom, 1)
-  return Math.max(across / freeWidth, tall / freeHeight) * margin
+  const freeWidth = Math.max(width - 2 * (reserve.x + gutter), 1)
+  const freeHeight = Math.max(height - 2 * (reserve.y + gutter), 1)
+  return Math.max(across / freeWidth, tall / freeHeight)
 }
 
 /**
- * The insets a focused plot can actually be kept clear of, framed at
- * `perPixel` world units per CSS pixel.
+ * Where a control `size` long goes along one axis of the screen, beside a plot
+ * `plot` long centred on it: `before` the plot (left, or above) or after it.
  *
- * The camera never pulls out past the board's own framing, so a plot can come
- * out wider or taller than the room the panels leave it - a wide plot on a
- * portrait phone is wider than the whole screen. Kept clear of the panels
- * along that axis anyway, it would only be pushed off the opposite edge, so
- * there it is centred on the screen as it was before there were panels.
+ * Its inner edge stands one gutter from the plot. Where that would take it
+ * closer than `edge` to the end of the screen - the plot has had to be fitted
+ * to the room, or the board's framing draws it bigger than the room - it stops
+ * at `edge` instead. Returns the control's leading coordinate (left, or top).
  */
-export function insetsThatFit(
-  across: number,
-  tall: number,
-  perPixel: number,
-  width: number,
-  height: number,
-  insets: ScreenInsets
-): ScreenInsets {
-  const fitsAcross = across / perPixel <= width - insets.left - insets.right
-  const fitsUp = tall / perPixel <= height - insets.top - insets.bottom
-  return {
-    left: fitsAcross ? insets.left : 0,
-    right: fitsAcross ? insets.right : 0,
-    top: fitsUp ? insets.top : 0,
-    bottom: fitsUp ? insets.bottom : 0
-  }
-}
-
-/**
- * An orthographic frustum `halfHeight` tall each way, slid so that whatever the
- * camera looks at lands in the middle of the free rectangle instead of the
- * middle of the canvas.
- *
- * `ease` runs from 0 (centred on the canvas) to 1 (centred in the free space),
- * so the slide can travel with the camera rather than jump ahead of it.
- */
-export function insetFrustum(
-  halfHeight: number,
-  width: number,
-  height: number,
-  insets: ScreenInsets,
-  ease: number
-): { left: number; right: number; top: number; bottom: number } {
-  const halfWidth = (halfHeight * width) / height
-  const perPixel = (halfHeight * 2) / height
-  const shiftX = ((insets.left - insets.right) / 2) * perPixel * ease
-  const shiftY = ((insets.top - insets.bottom) / 2) * perPixel * ease
-  return {
-    left: -halfWidth - shiftX,
-    right: halfWidth - shiftX,
-    top: halfHeight + shiftY,
-    bottom: -halfHeight + shiftY
-  }
+export function besidePlot(
+  screen: number,
+  plot: number,
+  gutter: number,
+  size: number,
+  edge: number,
+  before: boolean
+): number {
+  const reach = plot / 2 + gutter
+  return before
+    ? Math.max(edge, screen / 2 - reach - size)
+    : Math.min(screen - edge - size, screen / 2 + reach)
 }
