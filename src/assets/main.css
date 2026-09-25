@@ -69,3 +69,34 @@ a,
     padding: 0;
   }
 }
+
+/*
+ * Glass: the one material everything floating over the plot board is made of,
+ * so the leaderboard and a focused plot's controls read as the same family.
+ * What is behind it, blurred and lightened, with a hairline of white along the
+ * top edge where the light would catch it. Where a browser cannot blur, or the
+ * visitor has asked for less transparency, it goes solid enough to read.
+ */
+.glass {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow:
+    0 8px 32px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .glass {
+    background: rgba(255, 255, 255, 0.55);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    backdrop-filter: blur(20px) saturate(160%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: rgba(255, 255, 255, 0.94);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

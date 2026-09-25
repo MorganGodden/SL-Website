@@ -233,18 +233,8 @@ function rowLabel(entry: LeaderboardEntry): string {
 </template>
 
 <style scoped>
-/*
- * Glass: what is behind it, blurred and lightened, with a hairline of white
- * along the top edge where the light would catch it. The blur is the whole
- * effect, so where a browser cannot do it the panel falls back to a solid
- * enough background to keep the text readable.
- */
+/* The material itself is shared, in main.css; only its movement is the panel's. */
 .glass {
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  box-shadow:
-    0 8px 32px rgba(15, 23, 42, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
   transition: transform 180ms ease;
 }
 
@@ -263,14 +253,6 @@ function rowLabel(entry: LeaderboardEntry): string {
   .glass--centred {
     transform: translateY(calc(50vh - 50% - 1rem));
     transform: translateY(calc(50dvh - 50% - 1rem));
-  }
-}
-
-@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
-  .glass {
-    background: rgba(255, 255, 255, 0.55);
-    -webkit-backdrop-filter: blur(20px) saturate(160%);
-    backdrop-filter: blur(20px) saturate(160%);
   }
 }
 
