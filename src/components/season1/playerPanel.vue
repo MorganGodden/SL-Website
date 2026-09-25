@@ -11,7 +11,15 @@ import {
   WebGLRenderer
 } from 'three'
 import Slider from 'primevue/slider'
-import { buildPlayer, fetchSkin, skinMaterials, type PlayerModel } from '@/plots/playerModel'
+import {
+  buildPlayer,
+  fetchSkin,
+  skinMaterials,
+  swing,
+  turnBack,
+  type PlayerModel,
+  type Swing
+} from '@/plots/playerModel'
 import { getHeadUrl, getSkinUrl } from '@/helpers/playerHelper'
 import type { PlayerRef } from '@/common/interfaces'
 
@@ -82,6 +90,25 @@ function strata(): string {
 const TURN_PER_PIXEL = 0.011
 /** Turned a little towards the rest of the card, so they read as a figure. */
 const RESTING_YAW = 0.5
+/** Roughly how long, in seconds, they take to turn back to that once let go. */
+const RETURN_RESPONSE = 0.5
+/**
+ * How long a hand can rest before letting go and still be flinging the model,
+ * in milliseconds. Held still any longer, it is let go of standing still.
+ */
+const FLING_WINDOW_MS = 80
+/**
+ * How far the loose parts go at a brisk turn, in radians: the head left
+ * behind on the shoulders, the arms swung back against the turn and flung out
+ * from the sides. A little, as feedback that there is a body in there, rather
+ * than a rag doll. A turn this fast, in radians a second, is a brisk one.
+ */
+const HEAD_LAG = 0.22
+const ARM_SWING = 0.12
+const ARM_FLING = 0.06
+const BRISK_TURN = 8
+/** The arms' springs are firmer than the head's: they give a touch, and settle. */
+const ARM_DAMPING = 0.7
 /**
  * The bust, in skin pixels: the head and shoulders are always in frame, with
  * the top of the head held a block from the top of the canvas and room for
@@ -113,7 +140,16 @@ let renderer: WebGLRenderer | null = null
 let model: PlayerModel | null = null
 let materials: MeshLambertMaterial[] = []
 let yaw = RESTING_YAW
+/** How fast the model is turning, in radians a second: the hand's, then the spring's. */
+let yawVelocity = 0
 let dragX: number | null = null
+/** When the hand last moved it, on the pointer events' own clock. */
+let lastTurnAt = 0
+let lastFrameAt = 0
+/** The loose parts, each on its own spring: see `swing`. */
+const headLag: Swing = { angle: 0, speed: 0 }
+const armSwing: Swing = { angle: 0, speed: 0 }
+const armFling: Swing = { angle: 0, speed: 0 }
 let frameHandle: number | null = null
 let dirty = true
 let disposed = false
@@ -192,13 +228,39 @@ function fit(): void {
 
 function frame(now: number): void {
   frameHandle = requestAnimationFrame(frame)
+  const seconds = lastFrameAt === 0 ? 0 : Math.min((now - lastFrameAt) / 1000, 0.1)
+  lastFrameAt = now
   if (!renderer || !model) return
 
+  // Let go of, they turn back round to face the card again.
+  if (dragX === null && (yaw !== RESTING_YAW || yawVelocity !== 0)) {
+    const next = turnBack(yaw - RESTING_YAW, yawVelocity, seconds, RETURN_RESPONSE)
+    const settled = Math.abs(next.offset) < 0.001 && Math.abs(next.velocity) < 0.01
+    yaw = settled ? RESTING_YAW : RESTING_YAW + next.offset
+    yawVelocity = settled ? 0 : next.velocity
+    dirty = true
+  }
+
   if (motion.value !== 'reduce') {
-    // The game's own idle: the arms breathing in and out from the sides.
+    // How hard it is turning, one way or the other. A hand held still on it
+    // is not turning it, whatever it was doing a moment ago.
+    const still = dragX !== null && now - lastTurnAt > FLING_WINDOW_MS
+    const turn = still ? 0 : Math.max(-1, Math.min(1, yawVelocity / BRISK_TURN))
+    // Turning one way, the loose parts trail the other: the head is left
+    // looking where the body was, and each arm swings back from the side
+    // leading the turn - the right forwards, the left back.
+    swing(headLag, -HEAD_LAG * turn, seconds)
+    swing(armSwing, ARM_SWING * turn, seconds, undefined, ARM_DAMPING)
+    swing(armFling, ARM_FLING * turn * turn, seconds, undefined, ARM_DAMPING)
+    model.head.rotation.y = headLag.angle
+    model.rightArm.rotation.x = armSwing.angle
+    model.leftArm.rotation.x = -armSwing.angle
+
+    // The game's own idle: the arms breathing in and out from the sides,
+    // and out further the harder it turns.
     const t = (now / 1000) * 1.6
-    model.leftArm.rotation.z = Math.cos(t) * 0.03 + Math.PI * 0.02
-    model.rightArm.rotation.z = Math.cos(t + Math.PI) * 0.03 - Math.PI * 0.02
+    model.leftArm.rotation.z = Math.cos(t) * 0.03 + Math.PI * 0.02 + armFling.angle
+    model.rightArm.rotation.z = Math.cos(t + Math.PI) * 0.03 - Math.PI * 0.02 - armFling.angle
     dirty = true
   }
   if (!dirty) return
@@ -209,20 +271,41 @@ function frame(now: number): void {
 }
 
 function onPointerDown(event: PointerEvent): void {
+  // Caught on the way back, it stops where it is and is the hand's again.
   dragX = event.clientX
+  yawVelocity = 0
+  lastTurnAt = event.timeStamp
   canvas.value?.setPointerCapture(event.pointerId)
 }
 
 function onPointerMove(event: PointerEvent): void {
   if (dragX === null) return
   // Turned the way the hand goes, like something on a table taken by its front.
-  yaw += (event.clientX - dragX) * TURN_PER_PIXEL
+  const turn = (event.clientX - dragX) * TURN_PER_PIXEL
+  const seconds = (event.timeStamp - lastTurnAt) / 1000
+  yaw += turn
+  // Blended with the last reading: pointer events arrive unevenly, and one
+  // that comes in on the heels of another would read as a flick.
+  if (seconds > 0) yawVelocity = yawVelocity * 0.4 + (turn / seconds) * 0.6
   dragX = event.clientX
+  lastTurnAt = event.timeStamp
   dirty = true
 }
 
-function onPointerUp(): void {
+function onPointerUp(event: PointerEvent): void {
+  if (dragX === null) return
   dragX = null
+  if (event.timeStamp - lastTurnAt > FLING_WINDOW_MS) yawVelocity = 0
+  // The nearest way back round: a model turned twice over is facing the same
+  // way as one that was never turned, and should not unwind both turns.
+  const offset = yaw - RESTING_YAW
+  yaw = RESTING_YAW + Math.atan2(Math.sin(offset), Math.cos(offset))
+  // Without the motion, straight back rather than swung round.
+  if (motion.value === 'reduce') {
+    yaw = RESTING_YAW
+    yawVelocity = 0
+  }
+  dirty = true
 }
 
 useResizeObserver(canvas, fit)

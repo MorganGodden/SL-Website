@@ -218,6 +218,8 @@ function box(
 
 export interface PlayerModel {
   root: Group
+  /** Pivoted at the neck, so it can be turned on the shoulders. */
+  head: Group
   /** Pivoted at the shoulder, for the idle sway. */
   leftArm: Group
   rightArm: Group
@@ -250,7 +252,11 @@ export function buildPlayer(inner: Material, outer: Material | null, slim: boole
     }
   }
 
-  part([8, 8, 8], [0, 0], [32, 0], 1, root, 0, 12)
+  // The head turns on the neck, at the top of the body.
+  const head = new Group()
+  head.position.set(0, 8, 0)
+  part([8, 8, 8], [0, 0], [32, 0], 1, head, 0, 4)
+  root.add(head)
   part([8, 12, 4], [16, 16], [16, 32], 0.5, root, 0, 2)
   // Legs a hair apart, so their inner faces are not drawn on top of each other.
   part([4, 12, 4], [0, 16], [0, 32], 0.5, root, -1.9, -10)
@@ -265,7 +271,7 @@ export function buildPlayer(inner: Material, outer: Material | null, slim: boole
   part([arm, 12, 4], [32, 48], [48, 48], 0.5, leftArm, 0, -4)
   root.add(rightArm, leftArm)
 
-  return { root, leftArm, rightArm }
+  return { root, head, leftArm, rightArm }
 }
 
 /** Pixels onto a canvas, as a texture sampled the way the game samples a skin. */
@@ -354,4 +360,59 @@ export async function fetchSkin(url: string): Promise<Skin> {
   const context = canvas.getContext('2d', { willReadFrequently: true })!
   context.drawImage(image, 0, 0)
   return normaliseSkin(context.getImageData(0, 0, canvas.width, canvas.height))
+}
+
+/**
+ * One step of a model's turn back to rest once it has been let go of: a
+ * critically damped spring, so it comes round without overshooting, carrying
+ * whatever speed the hand let go at.
+ *
+ * Solved exactly rather than integrated, so a long frame - a tab coming back
+ * from the background - lands where the spring would have got to rather than
+ * flinging it past rest. `offset` is how far from rest, in radians, `velocity`
+ * in radians a second, and `response` roughly how long the swing back takes.
+ */
+export function turnBack(
+  offset: number,
+  velocity: number,
+  seconds: number,
+  response: number
+): { offset: number; velocity: number } {
+  const omega = (2 * Math.PI) / response
+  const decay = Math.exp(-omega * seconds)
+  const drive = velocity + omega * offset
+  return {
+    offset: (offset + drive * seconds) * decay,
+    velocity: (velocity - omega * drive * seconds) * decay
+  }
+}
+
+/** Something hanging off a moving model: how far it has swung, and how fast. */
+export interface Swing {
+  angle: number
+  speed: number
+}
+
+/**
+ * One step of a swinging part following where its motion would carry it - a
+ * head left behind as the body turns, an arm flung out - on a spring loose
+ * enough to sway past and settle back, which is what makes it read as a body
+ * rather than a statue.
+ *
+ * Stepped in slices no longer than a frame at 60Hz, which keeps a spring this
+ * lively steady however long the frame it is handed was.
+ */
+export function swing(
+  part: Swing,
+  target: number,
+  seconds: number,
+  response = 0.4,
+  damping = 0.4
+): void {
+  const omega = (2 * Math.PI) / response
+  for (let left = seconds; left > 0; left -= 1 / 60) {
+    const step = Math.min(left, 1 / 60)
+    part.speed += (-omega * omega * (part.angle - target) - 2 * damping * omega * part.speed) * step
+    part.angle += part.speed * step
+  }
 }

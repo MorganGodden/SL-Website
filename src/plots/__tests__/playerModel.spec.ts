@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { Box3, BoxGeometry, MeshBasicMaterial } from 'three'
-import { boxUvs, buildPlayer, isSlim, normaliseSkin, type SkinPixels } from '../playerModel'
+import {
+  boxUvs,
+  buildPlayer,
+  isSlim,
+  normaliseSkin,
+  swing,
+  turnBack,
+  type SkinPixels
+} from '../playerModel'
 
 const RED = [255, 0, 0, 255]
 const BLUE = [0, 0, 255, 255]
@@ -185,5 +193,64 @@ describe('buildPlayer', () => {
     }
     expect(meshes(null)).toBe(6)
     expect(meshes(material)).toBe(12)
+  })
+})
+
+describe('turnBack', () => {
+  const FRAME = 1 / 60
+
+  function run(offset: number, velocity: number, frames: number) {
+    const path: number[] = []
+    let state = { offset, velocity }
+    for (let i = 0; i < frames; i++) {
+      state = turnBack(state.offset, state.velocity, FRAME, 0.5)
+      path.push(state.offset)
+    }
+    return { path, state }
+  }
+
+  it('stays put at rest', () => {
+    expect(turnBack(0, 0, FRAME, 0.5)).toEqual({ offset: 0, velocity: 0 })
+  })
+
+  it('comes back to rest within the response without overshooting', () => {
+    const { path, state } = run(2, 0, 40)
+    expect(path.every((offset) => offset >= 0)).toBe(true)
+    expect(Math.abs(state.offset)).toBeLessThan(0.01)
+  })
+
+  it('carries on the way it was flung before coming back', () => {
+    const { path, state } = run(0, 6, 60)
+    expect(path[0]).toBeGreaterThan(0)
+    expect(Math.max(...path)).toBeGreaterThan(path[0])
+    expect(Math.abs(state.offset)).toBeLessThan(0.01)
+  })
+
+  it('lands in the same place whether a stretch is one frame or many', () => {
+    const whole = turnBack(1.5, -2, 0.3, 0.5)
+    let split = { offset: 1.5, velocity: -2 }
+    for (let i = 0; i < 3; i++) split = turnBack(split.offset, split.velocity, 0.1, 0.5)
+    expect(split.offset).toBeCloseTo(whole.offset, 9)
+    expect(split.velocity).toBeCloseTo(whole.velocity, 9)
+  })
+})
+
+describe('swing', () => {
+  it('sways past where it is heading, then settles there', () => {
+    const part = { angle: 0, speed: 0 }
+    let furthest = 0
+    for (let i = 0; i < 90; i++) {
+      swing(part, 0.3, 1 / 60)
+      furthest = Math.max(furthest, part.angle)
+    }
+    expect(furthest).toBeGreaterThan(0.3)
+    expect(furthest).toBeLessThan(0.45)
+    expect(part.angle).toBeCloseTo(0.3, 2)
+  })
+
+  it('stays steady through a long frame', () => {
+    const part = { angle: 0.5, speed: 0 }
+    swing(part, 0, 0.5)
+    expect(Math.abs(part.angle)).toBeLessThan(0.5)
   })
 })
