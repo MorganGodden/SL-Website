@@ -70,11 +70,6 @@ const RESUME_AFTER_MS = 4000
  */
 const DRAG_SLOP_PX = 6
 /**
- * Wheel notches are reported in pixels but are much coarser than a drag, so a
- * notch is deliberately worth less than the distance it claims.
- */
-const WHEEL_SCALE = 0.45
-/**
  * How long the pointer must rest on one plot before its card appears.
  *
  * Without it, sweeping across a board full of plots flickers a card per plot.
@@ -807,26 +802,45 @@ function scrub(dxPixels: number, dyPixels: number): void {
   needsRender = true
 }
 
+/**
+ * Whether Ctrl (or Cmd) is actually being held down.
+ *
+ * A pinch on a trackpad arrives as a wheel event with `ctrlKey` set, just as
+ * Ctrl and the wheel together do, and the two ask for different things: the
+ * pinch is a zoom, and Ctrl with the wheel is the slice. Only the real key
+ * sends key events of its own, so that is what tells them apart.
+ */
+let ctrlHeld = false
+
+function onModifiers(event: KeyboardEvent): void {
+  ctrlHeld = event.ctrlKey || event.metaKey
+}
+
+/** A key let go of while the window was elsewhere never sends its keyup here. */
+function onBlur(): void {
+  ctrlHeld = false
+}
+
+/**
+ * The wheel zooms, the board and a plot on it alike, and Ctrl with the wheel
+ * takes a focused plot's cut up and down. It does not move the board: that is
+ * done by dragging it.
+ */
 function onWheel(event: WheelEvent): void {
+  // Always the board's: the page never scrolls, and Ctrl with the wheel would
+  // otherwise zoom the whole page.
   event.preventDefault()
   if (props.covered) return
 
-  // A pinch on a trackpad arrives as a wheel event with ctrl held, which is
-  // also how a mouse asks to zoom. The plain wheel is already spoken for.
-  if (event.ctrlKey || event.metaKey) {
-    zoomBy(Math.exp(-event.deltaY * ZOOM_PER_PIXEL))
+  if (focus.value && ctrlHeld && (event.ctrlKey || event.metaKey)) {
+    setSlice(focus.value.cut - Math.sign(event.deltaY) * SLICE_PER_NOTCH)
     return
   }
 
-  // Over a focused plot the wheel takes the cut up and down, which is the only
-  // thing on screen there is to scroll through.
-  if (focus.value) {
-    const notches = Math.sign(event.deltaY) * SLICE_PER_NOTCH
-    setSlice(focus.value.cut - notches)
-    return
-  }
-
-  scrub(-event.deltaX * WHEEL_SCALE, -event.deltaY * WHEEL_SCALE)
+  // Firefox can count a mouse's notches in lines, or even pages, rather than
+  // pixels; left as they are, a notch would barely zoom at all.
+  const pixels = event.deltaY * [1, 16, window.innerHeight][event.deltaMode]
+  zoomBy(Math.exp(-pixels * ZOOM_PER_PIXEL))
 }
 
 /** Pointer position relative to the canvas, which the card is placed against. */
@@ -1089,6 +1103,7 @@ function slotUnderPointer(): HoverSlot | null {
  * reaching for the pointer.
  */
 function onKeyDown(event: KeyboardEvent): void {
+  onModifiers(event)
   if (event.key === 'Escape') {
     // A plot on the stage has first claim on it; with none up, Escape belongs
     // to whatever is covering the board.
@@ -1178,12 +1193,16 @@ onMounted(() => {
 
   document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('keydown', onKeyDown)
+  document.addEventListener('keyup', onModifiers)
+  window.addEventListener('blur', onBlur)
   frameHandle = requestAnimationFrame(frame)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('keydown', onKeyDown)
+  document.removeEventListener('keyup', onModifiers)
+  window.removeEventListener('blur', onBlur)
   if (frameHandle !== null) cancelAnimationFrame(frameHandle)
   frameHandle = null
   resizeObserver?.disconnect()
@@ -1244,7 +1263,7 @@ onBeforeUnmount(() => {
       >
         <!--
           Its owner. Nothing done on the panel reaches the board: a click there
-          is not a click to go back, a scroll is not a slice, and turning the
+          is not a click to go back, a scroll is not a zoom, and turning the
           skin is not spinning the plot. Down the side it is centred below the
           leaderboard's folded bar, which a short landscape screen would
           otherwise put over the top of it.
@@ -1315,8 +1334,8 @@ onBeforeUnmount(() => {
             bottom: insets.bottom + 'px'
           }"
         >
-          Drag to spin &middot; scroll to slice &middot; pinch to zoom &middot; click anywhere to go
-          back
+          Drag to spin &middot; scroll to zoom &middot; Ctrl + scroll to slice &middot; click
+          anywhere to go back
         </p>
       </div>
     </Transition>
