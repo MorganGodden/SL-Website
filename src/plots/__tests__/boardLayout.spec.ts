@@ -396,17 +396,27 @@ describe('rescaleScroll', () => {
 
 describe('pickColumn', () => {
   const FLOOR = 1
-  /** A copy standing at (x, z), turned `turns` quarter turns, with one height per column. */
+  /**
+   * A copy standing at (x, z), turned `turns` quarter turns, with one height per
+   * column filled solid up to it and then `overhang` blocks, as [x, y, z].
+   */
   const plot = (
     x: number,
     z: number,
     sizeX: number,
     sizeZ: number,
     heights: number[],
-    turns = 0
+    turns = 0,
+    overhang: [number, number, number][] = []
   ) => {
+    const sizeY = 12
+    const solid = new Uint8Array(sizeX * sizeY * sizeZ)
+    heights.forEach((height, i) => {
+      for (let y = 0; y < height; y++) solid[y * sizeX * sizeZ + i] = 1
+    })
+    for (const [bx, by, bz] of overhang) solid[(by * sizeZ + bz) * sizeX + bx] = 1
     const toWorld = new Matrix4().makeRotationY((turns * Math.PI) / 2).setPosition(x, 0, z)
-    return { toWorld, toLocal: toWorld.clone().invert(), sizeX, sizeZ, heights }
+    return { toWorld, toLocal: toWorld.clone().invert(), sizeX, sizeY, sizeZ, solid }
   }
   const flat = (height: number, count = 16) => new Array<number>(count).fill(height)
   const ray = (from: [number, number, number], towards: [number, number, number]) =>
@@ -426,6 +436,18 @@ describe('pickColumn', () => {
     const front = flat(1)
     front[3 * 4 + 3] = 3 // row z = 3, which the ray runs along, at x = 1..2
     expect(pickColumn(across, [plot(0, 0, 4, 4, front), plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(0)
+  })
+
+  it('passes under an overhang to the plot beyond', () => {
+    // Leaves at y = 3 over row z = 3 at x = 1..2, where the ray is at 2.75 to 2.25.
+    const canopy = plot(0, 0, 4, 4, flat(1), 0, [
+      [1, 3, 3],
+      [2, 3, 3]
+    ])
+    expect(pickColumn(across, [canopy, plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(1)
+    // The same leaves one layer lower are in its way.
+    const low = plot(0, 0, 4, 4, flat(1), 0, [[1, 2, 3]])
+    expect(pickColumn(across, [low, plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(0)
   })
 
   it('does not reach a plot through the floor beside it', () => {

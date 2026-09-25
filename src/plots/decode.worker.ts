@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { decodeSnapshot } from './decode'
-import { columnHeights, meshColumn, type ChangeStyle, type MeshDetail } from './mesher'
+import { meshColumn, solidBlocks, type ChangeStyle, type MeshDetail } from './mesher'
 import type { DecodedColumn, PlotSnapshot } from './types'
 
 /**
@@ -67,8 +67,8 @@ export interface DecodeSuccess {
   /** Per vertex: which block is arriving or leaving, and 0 for the rest. */
   changes: Float32Array
   indices: Uint32Array
-  /** How tall each column stands, for picking without the triangles; see `columnHeights`. */
-  heights: Uint16Array
+  /** Which blocks are not air, for picking without the triangles; see `solidBlocks`. */
+  solid: Uint8Array
   /** Index count of the opaque draw range; then blended, then fading. */
   opaqueIndexCount: number
   blendedIndexCount: number
@@ -123,7 +123,7 @@ function respond(
     uvs: mesh.uvs,
     changes: mesh.changes,
     indices: mesh.indices,
-    heights: columnHeights(column, ceiling),
+    solid: solidBlocks(column, ceiling),
     opaqueIndexCount: mesh.opaqueIndexCount,
     blendedIndexCount: mesh.blendedIndexCount
   }
@@ -136,7 +136,7 @@ function respond(
     response.uvs.buffer,
     response.changes.buffer,
     response.indices.buffer,
-    response.heights.buffer
+    response.solid.buffer
   ])
 }
 

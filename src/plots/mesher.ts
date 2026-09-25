@@ -895,7 +895,7 @@ function meshPass(
  * block, or 0 where there is nothing at all. Indexed `z * sizeX + x`. Blocks at
  * or above `ceiling` are left out, as they are from the mesh.
  */
-export function columnHeights(column: DecodedColumn, ceiling?: number): Uint16Array {
+function columnHeights(column: DecodedColumn, ceiling?: number): Uint16Array {
   const { sizeX, sizeY, sizeZ, indices, occupies } = column
   const top = Math.max(0, Math.min(sizeY, ceiling ?? sizeY))
   const heights = new Uint16Array(sizeX * sizeZ)
@@ -909,6 +909,19 @@ export function columnHeights(column: DecodedColumn, ceiling?: number): Uint16Ar
     }
   }
   return heights
+}
+
+/**
+ * 1 for every block of the plot that is not air, 0 for the rest, laid out as
+ * the column's own indices are. Blocks at or above `ceiling` are left out, as
+ * they are from the mesh.
+ */
+export function solidBlocks(column: DecodedColumn, ceiling?: number): Uint8Array {
+  const { sizeX, sizeY, sizeZ, indices, occupies } = column
+  const below = Math.max(0, Math.min(sizeY, ceiling ?? sizeY)) * sizeX * sizeZ
+  const solid = new Uint8Array(sizeX * sizeY * sizeZ)
+  for (let i = 0; i < below; i++) solid[i] = occupies[indices[i]]
+  return solid
 }
 
 /**

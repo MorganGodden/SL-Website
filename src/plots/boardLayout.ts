@@ -281,9 +281,10 @@ export interface PickTarget {
   /** The inverse of `toWorld`. */
   toLocal: Matrix4
   sizeX: number
+  sizeY: number
   sizeZ: number
-  /** How tall each column stands, indexed `z * sizeX + x`: see `columnHeights`. */
-  heights: ArrayLike<number>
+  /** 1 for each block that is not air, indexed `(y * sizeZ + z) * sizeX + x`: see `solidBlocks`. */
+  solid: ArrayLike<number>
 }
 
 const floorPlane = new Plane(new Vector3(0, 1, 0))
@@ -295,9 +296,9 @@ const crossingHere = new Vector3()
 /**
  * Which drawn copy a ray picks, as an index into `targets`, or null for none.
  *
- * Each copy is walked along the ray column by column and hit where the ray
- * first drops below the top of one, which is exact for anything seen from above
- * without testing a single triangle. The nearest hit wins.
+ * Each copy is walked along the ray block by block and hit at the first block
+ * that is not air, which is exact for whole cubes without testing a single
+ * triangle. The nearest hit wins.
  *
  * Most of a plot stands below the floor, and down there it can only be seen
  * down its own shaft: a hit below `floorY` counts only if the ray came down
@@ -318,7 +319,7 @@ export function pickColumn(
     const target = targets[i]
     if (!target) continue
     localRay.copy(ray).applyMatrix4(target.toLocal)
-    const t = marchColumns(localRay, target)
+    const t = marchBlocks(localRay, target)
     if (t === null) continue
 
     hitPoint.copy(localRay.origin).addScaledVector(localRay.direction, t)
@@ -341,67 +342,61 @@ export function pickColumn(
 }
 
 /**
- * Where along one axis a ray is over the span `[-half, half]`, as distances
- * along it, or null if it never is.
+ * Where along one axis a ray is over the span `[0, size]`, as distances along
+ * it, or null if it never is.
  */
-function overSpan(position: number, direction: number, half: number): [number, number] | null {
-  if (direction === 0) return Math.abs(position) <= half ? [-Infinity, Infinity] : null
-  const a = (-half - position) / direction
-  const b = (half - position) / direction
+function overSpan(position: number, direction: number, size: number): [number, number] | null {
+  if (direction === 0) return position >= 0 && position <= size ? [-Infinity, Infinity] : null
+  const a = -position / direction
+  const b = (size - position) / direction
   return [Math.min(a, b), Math.max(a, b)]
 }
 
 /**
- * How far along a ray in a plot's own frame it first meets a column, or null.
+ * How far along a ray in a plot's own frame it first meets a block, or null.
  *
  * The frame is the mesher's: centred on the origin in x and z, standing on
- * y = 0. Columns are visited in the order the ray crosses them, each a box from
- * the bottom of the plot to its height.
+ * y = 0. Blocks are visited in the order the ray passes through them, so the
+ * air under a tree's leaves lets the ray through to whatever is behind it.
  */
-function marchColumns(ray: Ray, { sizeX, sizeZ, heights }: PickTarget): number | null {
-  const { origin, direction } = ray
-  const spanX = overSpan(origin.x, direction.x, sizeX / 2)
-  const spanZ = overSpan(origin.z, direction.z, sizeZ / 2)
-  if (!spanX || !spanZ) return null
-  let t = Math.max(0, spanX[0], spanZ[0])
-  const leave = Math.min(spanX[1], spanZ[1])
+function marchBlocks(ray: Ray, { sizeX, sizeY, sizeZ, solid }: PickTarget): number | null {
+  const size = [sizeX, sizeY, sizeZ]
+  // Measured from the plot's corner, so block n spans [n, n + 1) on every axis.
+  const from = [ray.origin.x + sizeX / 2, ray.origin.y, ray.origin.z + sizeZ / 2]
+  const heading = [ray.direction.x, ray.direction.y, ray.direction.z]
+
+  let t = 0
+  let leave = Infinity
+  for (let axis = 0; axis < 3; axis++) {
+    const span = overSpan(from[axis], heading[axis], size[axis])
+    if (!span) return null
+    t = Math.max(t, span[0])
+    leave = Math.min(leave, span[1])
+  }
   if (t >= leave) return null
 
-  // The column the ray comes in over, and where it crosses into the next one
+  // The block the ray comes in at, and where it crosses into the next one
   // along each axis.
-  const column = (at: number, size: number) =>
-    Math.max(0, Math.min(size - 1, Math.floor(at + size / 2)))
-  let x = column(origin.x + direction.x * t, sizeX)
-  let z = column(origin.z + direction.z * t, sizeZ)
-  const stepX = direction.x > 0 ? 1 : -1
-  const stepZ = direction.z > 0 ? 1 : -1
-  const across = (cell: number, size: number, step: number, start: number, heading: number) =>
-    heading === 0 ? Infinity : (cell + (step > 0 ? 1 : 0) - size / 2 - start) / heading
-  let nextX = across(x, sizeX, stepX, origin.x, direction.x)
-  let nextZ = across(z, sizeZ, stepZ, origin.z, direction.z)
-  const everyX = direction.x === 0 ? Infinity : 1 / Math.abs(direction.x)
-  const everyZ = direction.z === 0 ? Infinity : 1 / Math.abs(direction.z)
+  const block = [0, 0, 0]
+  const step = [0, 0, 0]
+  const next = [0, 0, 0]
+  for (let axis = 0; axis < 3; axis++) {
+    const at = from[axis] + heading[axis] * t
+    block[axis] = Math.max(0, Math.min(size[axis] - 1, Math.floor(at)))
+    step[axis] = heading[axis] > 0 ? 1 : -1
+    next[axis] =
+      heading[axis] === 0
+        ? Infinity
+        : (block[axis] + (heading[axis] > 0 ? 1 : 0) - from[axis]) / heading[axis]
+  }
 
-  while (x >= 0 && x < sizeX && z >= 0 && z < sizeZ && t < leave) {
-    const out = Math.min(nextX, nextZ, leave)
-    const height = heights[z * sizeX + x]
-    if (height > 0) {
-      const yIn = origin.y + direction.y * t
-      const yOut = origin.y + direction.y * out
-      // In through its side, down onto its top, or up into its bottom.
-      if (yIn >= 0 && yIn < height) return t
-      if (yIn >= height && yOut < height) return (height - origin.y) / direction.y
-      if (yIn < 0 && yOut >= 0) return -origin.y / direction.y
-    }
-    if (nextX < nextZ) {
-      x += stepX
-      t = nextX
-      nextX += everyX
-    } else {
-      z += stepZ
-      t = nextZ
-      nextZ += everyZ
-    }
+  while (t < leave) {
+    if (solid[(block[1] * sizeZ + block[2]) * sizeX + block[0]] === 1) return t
+    const axis = next[0] < next[1] ? (next[0] < next[2] ? 0 : 2) : next[1] < next[2] ? 1 : 2
+    block[axis] += step[axis]
+    if (block[axis] < 0 || block[axis] >= size[axis]) return null
+    t = next[axis]
+    next[axis] += 1 / Math.abs(heading[axis])
   }
   return null
 }

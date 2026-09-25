@@ -364,8 +364,10 @@ interface ColumnData {
   /** Footprint in blocks, which decides whether this plot needs a collar. */
   sizeX: number
   sizeZ: number
-  /** How tall each column stands, which is what picking tests against. */
-  heights: Uint16Array
+  /** Layers in the plot, bottom to top. */
+  sizeY: number
+  /** Which blocks are not air, which is what picking tests against. */
+  solid: Uint8Array
 }
 
 /** One drawn copy of a plot. The lattice repeats, so a plot has many. */
@@ -885,7 +887,7 @@ export class PlotRenderer {
    * The previous geometry is disposed explicitly. Without this the board leaks
    * GPU memory every few seconds for as long as it runs.
    */
-  setColumn(uuid: string, mesh: ColumnMesh & { heights: Uint16Array }): void {
+  setColumn(uuid: string, mesh: ColumnMesh & { solid: Uint8Array }): void {
     if (this.disposed) return
 
     const geometry = buildGeometry(mesh, this.seconds())
@@ -911,8 +913,9 @@ export class PlotRenderer {
       existing.surfaceLevel = mesh.surfaceLevel
       existing.minY = mesh.minY
       existing.sizeX = mesh.sizeX
+      existing.sizeY = mesh.sizeY
       existing.sizeZ = mesh.sizeZ
-      existing.heights = mesh.heights
+      existing.solid = mesh.solid
     } else {
       this.columns.set(uuid, {
         geometry,
@@ -920,8 +923,9 @@ export class PlotRenderer {
         surfaceLevel: mesh.surfaceLevel,
         minY: mesh.minY,
         sizeX: mesh.sizeX,
+        sizeY: mesh.sizeY,
         sizeZ: mesh.sizeZ,
-        heights: mesh.heights
+        solid: mesh.solid
       })
     }
 
@@ -1393,10 +1397,10 @@ export class PlotRenderer {
    *
    * Tests the plots as they stand rather than their footprints on the floor
    * plane: under an isometric camera a tall build covers the plots behind it,
-   * and the plot you are pointing at is the one you can see. Tests how tall each
-   * column stands rather than the triangles, though: picking runs every frame,
-   * and a well dug plot is a hundred thousand triangles per copy the ray passes
-   * through. Only the air under an overhang reads as solid.
+   * and the plot you are pointing at is the one you can see. Tests the blocks
+   * rather than the triangles, though: picking runs every frame, and a well dug
+   * plot is a hundred thousand triangles per copy the ray passes through. Only a
+   * block that is not a whole cube reads as one.
    */
   pickSlot(x: number, y: number): number | null {
     if (this.disposed) return null
