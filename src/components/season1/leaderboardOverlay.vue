@@ -78,7 +78,7 @@ function rowLabel(entry: LeaderboardEntry): string {
 
 <template>
   <div
-    class="pointer-events-none fixed inset-0 z-20 flex items-start justify-center p-3 sm:p-4"
+    class="pointer-events-none fixed inset-0 z-20 flex items-start justify-center px-3 py-[1.125rem] sm:px-4 sm:py-6"
   >
     <section
       aria-labelledby="leaderboard-title"
@@ -245,14 +245,14 @@ function rowLabel(entry: LeaderboardEntry): string {
  * off is half of its own height, whatever that has reached.
  */
 .glass--centred {
-  transform: translateY(calc(50vh - 50% - 0.75rem));
-  transform: translateY(calc(50dvh - 50% - 0.75rem));
+  transform: translateY(calc(50vh - 50% - 1.125rem));
+  transform: translateY(calc(50dvh - 50% - 1.125rem));
 }
 
 @media (min-width: 640px) {
   .glass--centred {
-    transform: translateY(calc(50vh - 50% - 1rem));
-    transform: translateY(calc(50dvh - 50% - 1rem));
+    transform: translateY(calc(50vh - 50% - 1.5rem));
+    transform: translateY(calc(50dvh - 50% - 1.5rem));
   }
 }
 

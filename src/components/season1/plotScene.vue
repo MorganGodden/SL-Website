@@ -141,7 +141,7 @@ const COVER_TAU_MS = 110
  * keeps the same room clear above it as below, so it is kept clear of the bar
  * by whichever of the two is the taller: the bar, or the card under the plot.
  */
-const BAR_CLEARANCE = 80
+const BAR_CLEARANCE = 88
 
 /**
  * A drawn copy of a plot, tagged with the lattice cell it sits in.
@@ -1254,7 +1254,7 @@ onBeforeUnmount(() => {
       <div
         v-if="focus && !covered"
         ref="cardBox"
-        class="dock pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-4"
+        class="dock pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-4 pb-6"
         @pointerdown.stop
         @pointerup.stop
         @pointermove.stop
@@ -1332,7 +1332,7 @@ onBeforeUnmount(() => {
 /* Closer to the edge on a phone on its side, where every pixel of height counts. */
 @media (orientation: landscape) and (max-height: 480px) {
   .dock {
-    padding-bottom: 0.75rem;
+    padding-bottom: 1.125rem;
   }
 }
 
