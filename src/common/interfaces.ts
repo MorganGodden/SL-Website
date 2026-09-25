@@ -16,3 +16,11 @@ export interface LeaderboardFile {
   source: string
   players: LeaderboardEntry[]
 }
+
+/** A player the board can bring forward, named as the leaderboard names them. */
+export interface PlayerRef {
+  uuid: string
+  name: string
+  /** Null for a player with a plot but no leaderboard row yet. */
+  rank: number | null
+}

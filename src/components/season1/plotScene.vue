@@ -1,22 +1,26 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useMediaQuery, useResizeObserver } from '@vueuse/core'
 import Slider from 'primevue/slider'
+import PlayerPanel from '@/components/season1/playerPanel.vue'
 import { PlotRenderer, type RenderSlot } from '@/plots/plotRenderer'
 import { PlotBoard, type BoardStatus } from '@/plots/plotBoard'
 import { resolvePlot } from '@/plots/plotLink'
 import { plotsConfigured } from '@/plots/plotsClient'
 import {
   ASSUMED_PLOT_WIDTH,
+  NO_INSETS,
   SCROLL_DIRECTION,
   boardPitch,
   layoutGrid,
   pickStride,
   rescaleScroll,
   screenDeltaToWorld,
-  widestPlot
+  widestPlot,
+  type ScreenInsets
 } from '@/plots/boardLayout'
 import type { DecodeSuccess } from '@/plots/decode.worker'
-import type { LeaderboardEntry } from '@/common/interfaces'
+import type { LeaderboardEntry, PlayerRef } from '@/common/interfaces'
 import { getMedalEmoji } from '@/common/utilities'
 
 const props = defineProps<{
@@ -177,8 +181,14 @@ interface Label {
 
 /** What the focused plot's own controls need to know about it. */
 interface FocusState {
+  uuid: string
   name: string
   score: string | null
+  rank: number | null
+  medal: string | null
+  /** The plots either side of this one in board order, for stepping through. */
+  prev: PlayerRef | null
+  next: PlayerRef | null
   /** Layers currently drawn, from 1 to `layers`. */
   cut: number
   /** Layers the plot has anything in at all. */
@@ -192,6 +202,16 @@ const message = ref<string | null>('Connecting...')
 const hovered = shallowRef<Label | null>(null)
 /** Non-null while a plot is on the stage, which is what puts its controls up. */
 const focus = shallowRef<FocusState | null>(null)
+/**
+ * Which way round the focused plot's panels go: the player down the left of a
+ * landscape screen, where a plot fitted to the height leaves room either side,
+ * and along the bottom of a portrait one, where it leaves room above and below.
+ */
+const landscape = useMediaQuery('(orientation: landscape)')
+/** The panels around a focused plot, measured so the plot can be kept clear of them. */
+const playerBox = ref<HTMLElement | null>(null)
+const sliceBox = ref<HTMLElement | null>(null)
+const insets = ref<ScreenInsets>(NO_INSETS)
 
 let renderer: PlotRenderer | null = null
 let board: PlotBoard | null = null
@@ -289,6 +309,9 @@ function recomputeOrder(): void {
   // This is the board's answer to "whose plot can be pointed at": the
   // leaderboard over it lists players the board may have nothing to show for.
   emit('plots', order)
+  // A shared link puts a plot on the stage as soon as it arrives, before the
+  // rest of the board has, so its neighbours are worked out again as they do.
+  if (focus.value) focus.value = { ...focus.value, ...neighbours(focus.value.uuid) }
   needsRender = true
 }
 
@@ -969,8 +992,12 @@ function takeFocus(key: string, uuid: string): void {
   // way the hover card picks one: a payload's name can be stale, or a bare uuid.
   const entry = props.rows.find((row) => row.playerUuid === uuid)
   focus.value = {
+    uuid,
     name: entry?.playerName ?? column.playerName,
     score: entry ? entry.score.toLocaleString() : null,
+    rank: entry?.rank ?? null,
+    medal: entry ? getMedalEmoji(entry.rank) : null,
+    ...neighbours(uuid),
     cut: sliceDrawn,
     layers: column.occupiedHeight,
     worldY: column.minY + sliceDrawn - 1
@@ -979,6 +1006,49 @@ function takeFocus(key: string, uuid: string): void {
   needsRender = true
   emit('focused', { uuid, name: focus.value.name })
 }
+
+/** The plots either side of a player's in board order. */
+function neighbours(uuid: string): { prev: PlayerRef | null; next: PlayerRef | null } {
+  const at = order.indexOf(uuid)
+  // A plot the board has since dropped has no place in the order to step from.
+  if (at === -1) return { prev: null, next: null }
+  return { prev: playerRef(order[at - 1]), next: playerRef(order[at + 1]) }
+}
+
+/** A player on the board, by the name and rank the leaderboard gives them. */
+function playerRef(uuid: string | undefined): PlayerRef | null {
+  if (uuid === undefined) return null
+  const entry = props.rows.find((row) => row.playerUuid === uuid)
+  return {
+    uuid,
+    name: entry?.playerName ?? columns.get(uuid)?.playerName ?? uuid,
+    rank: entry?.rank ?? null
+  }
+}
+
+/**
+ * Hands the renderer the room the panels take, so the plot is fitted to what
+ * is left of the screen and centred in it rather than under a panel.
+ *
+ * Measured by layout size rather than on-screen position, so a panel caught
+ * sliding in is measured where it is going. While the panels are gone the last
+ * measurement stands: the camera is still pulling out, and it pulls out from
+ * the framing it went in with.
+ */
+function measureInsets(): void {
+  const player = playerBox.value
+  const slice = sliceBox.value
+  if (!player || !slice) return
+
+  insets.value = landscape.value
+    ? { left: player.offsetWidth, right: slice.offsetWidth, top: 0, bottom: 0 }
+    : { left: 0, right: slice.offsetWidth, top: 0, bottom: player.offsetHeight }
+  renderer?.setFocusInsets(insets.value)
+  needsRender = true
+}
+
+useResizeObserver([playerBox, sliceBox], measureInsets)
+watch(landscape, measureInsets, { flush: 'post' })
 
 /**
  * The drawn copy under the pointer, picked on the spot if hovering has not
@@ -1143,8 +1213,9 @@ onBeforeUnmount(() => {
     </div>
 
     <!--
-      The focused plot's own controls. The board behind it is black by the time
-      these are up, so they are laid out for that rather than for the board.
+      The focused plot's own controls. The board behind it has washed out to sky
+      by the time these are up, so they are laid out for that rather than for
+      the board.
     -->
     <Transition name="plot-card">
       <div
@@ -1153,7 +1224,44 @@ onBeforeUnmount(() => {
         @pointerdown.stop
         @pointerup.stop
       >
-        <div class="absolute inset-y-0 right-0 flex items-center p-4 sm:p-6">
+        <!--
+          Its owner. Nothing done on the panel reaches the board: a click there
+          is not a click to go back, a scroll is not a slice, and turning the
+          skin is not spinning the plot. Down the side it is centred below the
+          leaderboard's folded bar, which a short landscape screen would
+          otherwise put over the top of it.
+        -->
+        <div
+          ref="playerBox"
+          class="player-slide absolute flex"
+          :class="
+            landscape
+              ? 'player-slide--side inset-y-0 left-0 items-center px-3 pb-3 pt-20 sm:px-4 sm:pb-4'
+              : 'player-slide--bottom inset-x-0 bottom-0 p-3 sm:p-4'
+          "
+          @pointermove.stop
+          @wheel.stop.prevent
+        >
+          <PlayerPanel
+            class="pointer-events-auto"
+            :uuid="focus.uuid"
+            :name="focus.name"
+            :score="focus.score"
+            :rank="focus.rank"
+            :medal="focus.medal"
+            :prev="focus.prev"
+            :next="focus.next"
+            :landscape="landscape"
+            @step="focusPlayer"
+          />
+        </div>
+
+        <!-- Sized to the screen's height too, so a short landscape screen keeps all of it. -->
+        <div
+          ref="sliceBox"
+          class="absolute right-0 top-0 flex items-center px-4 pb-4 pt-20 sm:px-6 sm:pb-6"
+          :style="{ bottom: insets.bottom + 'px' }"
+        >
           <div
             class="pointer-events-auto flex flex-col items-center gap-3 rounded-xl border border-white/60 bg-white/55 px-3 py-4 backdrop-blur-sm"
           >
@@ -1165,7 +1273,7 @@ onBeforeUnmount(() => {
               orientation="vertical"
               :min="1"
               :max="focus.layers"
-              class="h-40 sm:h-56"
+              class="h-[clamp(6rem,calc(100dvh-16rem),10rem)] sm:h-[clamp(6rem,calc(100dvh-16rem),14rem)]"
               aria-label="Slice height"
               @update:model-value="setSlice(Number($event))"
             />
@@ -1180,16 +1288,18 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="absolute inset-x-0 bottom-6 flex flex-col items-center gap-1 text-center">
-          <span class="text-sm font-semibold text-slate-800">
-            {{ focus.name }}
-            <span v-if="focus.score" class="ml-1 font-normal text-white/50">{{ focus.score }}</span>
-          </span>
-          <span class="text-[11px] text-slate-600">
-            Drag to spin &middot; scroll to slice &middot; pinch to zoom &middot; click anywhere to
-            go back
-          </span>
-        </div>
+        <!-- Under the plot, in the middle of the room the panels leave it. -->
+        <p
+          class="absolute px-4 pb-4 text-center text-[11px] text-slate-600 sm:pb-6"
+          :style="{
+            left: insets.left + 'px',
+            right: insets.right + 'px',
+            bottom: insets.bottom + 'px'
+          }"
+        >
+          Drag to spin &middot; scroll to slice &middot; pinch to zoom &middot; click anywhere to go
+          back
+        </p>
       </div>
     </Transition>
 
@@ -1230,9 +1340,33 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
+/*
+ * The player's panel slides in from the edge it stands on as it fades, and
+ * back out to it the same way, keeping pace with the fade in each direction.
+ */
+.player-slide {
+  transition: transform 110ms ease-out;
+}
+
+.plot-card-leave-active .player-slide {
+  transition: transform 90ms ease-in;
+}
+
+.plot-card-enter-from .player-slide--side,
+.plot-card-leave-to .player-slide--side {
+  transform: translateX(-1rem);
+}
+
+.plot-card-enter-from .player-slide--bottom,
+.plot-card-leave-to .player-slide--bottom {
+  transform: translateY(1rem);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .plot-card-enter-active,
-  .plot-card-leave-active {
+  .plot-card-leave-active,
+  .player-slide,
+  .plot-card-leave-active .player-slide {
     transition: none;
   }
 }

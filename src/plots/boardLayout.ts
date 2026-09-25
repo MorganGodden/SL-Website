@@ -400,3 +400,90 @@ function marchBlocks(ray: Ray, { sizeX, sizeY, sizeZ, solid }: PickTarget): numb
   }
   return null
 }
+
+/** Room kept clear along each edge of the canvas, in CSS pixels. */
+export interface ScreenInsets {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+export const NO_INSETS: ScreenInsets = { left: 0, right: 0, top: 0, bottom: 0 }
+
+/**
+ * World units per CSS pixel that fit a focused plot into what the insets leave
+ * of the canvas, with `margin` to spare along whichever side it fills first.
+ *
+ * `across` and `tall` are the plot's extent on screen, in world units. It is
+ * fitted to the free rectangle rather than to the canvas: a panel along one
+ * edge is room the plot cannot use, and fitting it to the whole canvas would
+ * put part of it under the panel.
+ */
+export function focusUnitsPerPixel(
+  across: number,
+  tall: number,
+  width: number,
+  height: number,
+  insets: ScreenInsets,
+  margin: number
+): number {
+  const freeWidth = Math.max(width - insets.left - insets.right, 1)
+  const freeHeight = Math.max(height - insets.top - insets.bottom, 1)
+  return Math.max(across / freeWidth, tall / freeHeight) * margin
+}
+
+/**
+ * The insets a focused plot can actually be kept clear of, framed at
+ * `perPixel` world units per CSS pixel.
+ *
+ * The camera never pulls out past the board's own framing, so a plot can come
+ * out wider or taller than the room the panels leave it - a wide plot on a
+ * portrait phone is wider than the whole screen. Kept clear of the panels
+ * along that axis anyway, it would only be pushed off the opposite edge, so
+ * there it is centred on the screen as it was before there were panels.
+ */
+export function insetsThatFit(
+  across: number,
+  tall: number,
+  perPixel: number,
+  width: number,
+  height: number,
+  insets: ScreenInsets
+): ScreenInsets {
+  const fitsAcross = across / perPixel <= width - insets.left - insets.right
+  const fitsUp = tall / perPixel <= height - insets.top - insets.bottom
+  return {
+    left: fitsAcross ? insets.left : 0,
+    right: fitsAcross ? insets.right : 0,
+    top: fitsUp ? insets.top : 0,
+    bottom: fitsUp ? insets.bottom : 0
+  }
+}
+
+/**
+ * An orthographic frustum `halfHeight` tall each way, slid so that whatever the
+ * camera looks at lands in the middle of the free rectangle instead of the
+ * middle of the canvas.
+ *
+ * `ease` runs from 0 (centred on the canvas) to 1 (centred in the free space),
+ * so the slide can travel with the camera rather than jump ahead of it.
+ */
+export function insetFrustum(
+  halfHeight: number,
+  width: number,
+  height: number,
+  insets: ScreenInsets,
+  ease: number
+): { left: number; right: number; top: number; bottom: number } {
+  const halfWidth = (halfHeight * width) / height
+  const perPixel = (halfHeight * 2) / height
+  const shiftX = ((insets.left - insets.right) / 2) * perPixel * ease
+  const shiftY = ((insets.top - insets.bottom) / 2) * perPixel * ease
+  return {
+    left: -halfWidth - shiftX,
+    right: halfWidth - shiftX,
+    top: halfHeight + shiftY,
+    bottom: -halfHeight + shiftY
+  }
+}

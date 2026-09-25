@@ -4,7 +4,11 @@ import {
   ASSUMED_PLOT_WIDTH,
   PLOT_GAP,
   SCREEN_UP_ON_FLOOR,
+  NO_INSETS,
   boardPitch,
+  focusUnitsPerPixel,
+  insetFrustum,
+  insetsThatFit,
   layoutGrid,
   pickColumn,
   pickStride,
@@ -474,5 +478,62 @@ describe('pickColumn', () => {
     const drawn = plot(0, 0, 4, 4, flat(2))
     expect(pickColumn(ray([0, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBe(1)
     expect(pickColumn(ray([20, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBeNull()
+  })
+})
+
+describe('focus framing around panels', () => {
+  const W = 1600
+  const H = 900
+  const PANEL = { left: 280, right: 110, top: 0, bottom: 0 }
+
+  it('matches the old whole-canvas fit when nothing is inset', () => {
+    const across = 45
+    const tall = 48
+    const old = Math.max(tall / 2, across / (2 * (W / H))) * 1.24
+    expect((focusUnitsPerPixel(across, tall, W, H, NO_INSETS, 1.24) * H) / 2).toBeCloseTo(old)
+  })
+
+  it('fits the plot to the free rectangle, not the canvas', () => {
+    // Wide enough that the width is the limiting side once the panels are in.
+    const across = 120
+    const perPixel = focusUnitsPerPixel(across, 10, W, H, PANEL, 1)
+    expect(across / perPixel).toBeCloseTo(W - PANEL.left - PANEL.right)
+  })
+
+  it('puts what the camera looks at in the middle of the free rectangle', () => {
+    // Where the view axis lands on the canvas, in pixels from the top left.
+    const centreOf = (f: ReturnType<typeof insetFrustum>) => ({
+      x: ((0 - f.left) / (f.right - f.left)) * W,
+      y: ((f.top - 0) / (f.top - f.bottom)) * H
+    })
+    const sheet = { left: 0, right: 90, top: 0, bottom: 160 }
+
+    expect(centreOf(insetFrustum(40, W, H, PANEL, 1)).x).toBeCloseTo(
+      PANEL.left + (W - PANEL.left - PANEL.right) / 2
+    )
+    expect(centreOf(insetFrustum(40, W, H, sheet, 1)).y).toBeCloseTo((H - sheet.bottom) / 2)
+    // Not slid at all before the camera has set off, so the board is untouched.
+    expect(centreOf(insetFrustum(40, W, H, PANEL, 0))).toEqual({ x: W / 2, y: H / 2 })
+  })
+
+  it('centres a plot too wide for the room beside the panels on the screen instead', () => {
+    // A 32 block plot on a portrait phone, at the board's own framing: 416px
+    // across a 390px screen, with a 110px slice rail and a 154px sheet.
+    const sheet = { left: 0, right: 110, top: 0, bottom: 154 }
+    const perPixel = 45.25 / 416
+    expect(insetsThatFit(45.25, 54, perPixel, 390, 844, sheet)).toEqual({
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 154
+    })
+    // The same plot on a desktop fits beside both panels, so keeps them.
+    expect(insetsThatFit(45.25, 54, 45.25 / 490, W, H, PANEL)).toEqual(PANEL)
+  })
+
+  it('keeps the view the height it was asked for', () => {
+    const f = insetFrustum(40, W, H, PANEL, 0.6)
+    expect(f.top - f.bottom).toBeCloseTo(80)
+    expect(f.right - f.left).toBeCloseTo((80 * W) / H)
   })
 })
