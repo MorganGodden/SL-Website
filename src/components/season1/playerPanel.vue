@@ -125,6 +125,7 @@ const ELEVATION = 0.12
 const FIT_MARGIN = 1.12
 
 const canvas = ref<HTMLCanvasElement | null>(null)
+const bust = ref<HTMLElement | null>(null)
 /** Whether the skin is on the model yet, rather than the grey stand-in. */
 const ready = ref(false)
 const motion = usePreferredReducedMotion()
@@ -185,6 +186,48 @@ function showStandIn(): void {
   const grey = new MeshLambertMaterial({ color: 0x94a3b8 })
   show(buildPlayer(grey, null, false), [grey])
 }
+
+/**
+ * Which way the owner has just changed, for the card's contents to move: out
+ * past the button that was pressed and in from the other side, the way a list
+ * scrolls. Anyone arriving other than from beside the last owner - a pick from
+ * the leaderboard, a click on the board - cross-fades in place instead.
+ *
+ * Worked out from who was beside whom, so it holds whatever did the stepping.
+ */
+const direction = ref<'next' | 'prev' | 'swap'>('swap')
+let beside = { prev: props.prev?.uuid, next: props.next?.uuid }
+watch(
+  () => props.uuid,
+  (uuid) => {
+    direction.value = uuid === beside.next ? 'next' : uuid === beside.prev ? 'prev' : 'swap'
+  }
+)
+watch(
+  () => [props.prev?.uuid, props.next?.uuid] as const,
+  ([prev, next]) => (beside = { prev, next }),
+  { flush: 'post' }
+)
+
+/**
+ * The bust cannot be swapped for a second copy the way the text is - it is one
+ * canvas, with its own renderer - so it comes in on its own: from the same side
+ * as the text, while the new skin loads onto it.
+ */
+watch(
+  () => props.uuid,
+  () => {
+    const shift = { next: 12, prev: -12, swap: 0 }[direction.value]
+    bust.value?.animate(
+      [
+        { opacity: 0, transform: `translateX(${motion.value === 'reduce' ? 0 : shift}px)` },
+        { opacity: 1, transform: 'none' }
+      ],
+      { duration: 220, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
+    )
+  },
+  { flush: 'post' }
+)
 
 watch(
   () => props.uuid,
@@ -340,7 +383,7 @@ onBeforeUnmount(() => {
     their own past it. Laid out by area: see the styles.
   -->
   <section aria-label="Plot on show" class="card glass">
-    <div class="bust">
+    <div ref="bust" class="bust">
       <canvas
         ref="canvas"
         role="img"
@@ -354,28 +397,39 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <p class="name flex min-w-0 items-center gap-1.5">
-      <span v-if="rank" class="sr-only">Rank {{ rank }},</span>
-      <span v-if="medal" aria-hidden="true" class="text-base leading-none">{{ medal }}</span>
-      <span
-        v-else-if="rank"
-        aria-hidden="true"
-        class="rounded-md bg-slate-900/[0.06] px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-slate-600"
+    <!--
+      Keyed on the owner, so stepping along swaps them for a new pair that
+      passes the old one in the same grid area: see `direction`.
+    -->
+    <Transition :name="`shift-${direction}`">
+      <p :key="uuid" class="name flex min-w-0 items-center gap-1.5">
+        <span v-if="rank" class="sr-only">Rank {{ rank }},</span>
+        <span v-if="medal" aria-hidden="true" class="text-base leading-none">{{ medal }}</span>
+        <span
+          v-else-if="rank"
+          aria-hidden="true"
+          class="rounded-md bg-slate-900/[0.06] px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-slate-600"
+        >
+          #{{ rank }}
+        </span>
+        <span class="truncate text-[15px] font-semibold tracking-tight text-slate-900">
+          {{ name }}
+        </span>
+      </p>
+    </Transition>
+    <Transition :name="`shift-${direction}`">
+      <p
+        v-if="score"
+        :key="uuid"
+        class="score text-2xl font-semibold leading-none tracking-tight tabular-nums text-slate-900"
       >
-        #{{ rank }}
-      </span>
-      <span class="truncate text-[15px] font-semibold tracking-tight text-slate-900">
-        {{ name }}
-      </span>
-    </p>
-    <p
-      v-if="score"
-      class="score text-2xl font-semibold leading-none tracking-tight tabular-nums text-slate-900"
-    >
-      {{ score }}
-      <span class="text-xs font-medium tracking-normal text-slate-600">points</span>
-    </p>
-    <p v-else class="score text-sm font-medium text-slate-600">Unranked</p>
+        {{ score }}
+        <span class="text-xs font-medium tracking-normal text-slate-600">points</span>
+      </p>
+      <p v-else :key="`${uuid}-unranked`" class="score text-sm font-medium text-slate-600">
+        Unranked
+      </p>
+    </Transition>
 
     <!-- The plots either side, by who owns them rather than by where they rank. -->
     <nav aria-label="Other plots" class="steps grid grid-cols-2 gap-1">
@@ -388,11 +442,18 @@ onBeforeUnmount(() => {
         @click="prev && emit('step', prev.uuid)"
       >
         <i class="pi pi-chevron-left text-[10px]" aria-hidden="true" />
-        <template v-if="prev">
-          <img :src="getHeadUrl(prev.uuid)" alt="" class="size-4 shrink-0 rounded-[3px]" />
-          <span class="truncate">{{ prev.name }}</span>
-        </template>
-        <span v-else aria-hidden="true">First</span>
+        <!-- The button stays put under the pointer; only who it names moves along. -->
+        <span class="stack">
+          <Transition :name="`shift-${direction}`">
+            <span :key="prev?.uuid ?? 'first'" class="flex min-w-0 items-center gap-1.5">
+              <template v-if="prev">
+                <img :src="getHeadUrl(prev.uuid)" alt="" class="size-4 shrink-0 rounded-[3px]" />
+                <span class="truncate">{{ prev.name }}</span>
+              </template>
+              <span v-else aria-hidden="true">First</span>
+            </span>
+          </Transition>
+        </span>
       </button>
       <button
         type="button"
@@ -402,11 +463,17 @@ onBeforeUnmount(() => {
         :title="next?.name"
         @click="next && emit('step', next.uuid)"
       >
-        <template v-if="next">
-          <span class="truncate">{{ next.name }}</span>
-          <img :src="getHeadUrl(next.uuid)" alt="" class="size-4 shrink-0 rounded-[3px]" />
-        </template>
-        <span v-else aria-hidden="true">Last</span>
+        <span class="stack justify-items-end">
+          <Transition :name="`shift-${direction}`">
+            <span :key="next?.uuid ?? 'last'" class="flex min-w-0 items-center gap-1.5">
+              <template v-if="next">
+                <span class="truncate">{{ next.name }}</span>
+                <img :src="getHeadUrl(next.uuid)" alt="" class="size-4 shrink-0 rounded-[3px]" />
+              </template>
+              <span v-else aria-hidden="true">Last</span>
+            </span>
+          </Transition>
+        </span>
         <i class="pi pi-chevron-right text-[10px]" aria-hidden="true" />
       </button>
     </nav>
@@ -690,6 +757,18 @@ onBeforeUnmount(() => {
   opacity: 0.4;
 }
 
+/* One cell, so a name leaving and the next arriving pass through the same place. */
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+}
+
+.stack > * {
+  grid-area: 1 / 1;
+}
+
 .round {
   @apply flex size-9 items-center justify-center rounded-full bg-white/50 text-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary-600 disabled:pointer-events-none disabled:opacity-0;
 }
@@ -707,7 +786,52 @@ onBeforeUnmount(() => {
   }
 }
 
+/*
+ * Stepping along: out past the button pressed and in from the other side, the
+ * old and new overlapping in their one place as they pass. Leaving is quicker
+ * than arriving, so the eye lands on who has just come in.
+ */
+.shift-next-enter-active,
+.shift-prev-enter-active,
+.shift-swap-enter-active {
+  transition:
+    opacity 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.shift-next-leave-active,
+.shift-prev-leave-active,
+.shift-swap-leave-active {
+  transition:
+    opacity 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.shift-next-enter-from,
+.shift-prev-leave-to {
+  opacity: 0;
+  transform: translateX(0.75rem);
+}
+
+.shift-next-leave-to,
+.shift-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-0.75rem);
+}
+
+.shift-swap-enter-from,
+.shift-swap-leave-to {
+  opacity: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .shift-next-enter-from,
+  .shift-prev-leave-to,
+  .shift-next-leave-to,
+  .shift-prev-enter-from {
+    transform: none;
+  }
+
   .skin,
   .step,
   .round {
