@@ -1648,6 +1648,7 @@ export class PlotRenderer {
    */
   private draw(): void {
     this.changeClock.value = this.seconds()
+    if (this.focusGeometry && !this.settling) settleFades(this.focusGeometry)
     if (this.glintMesh.visible) {
       this.glintMaterial.uniforms.uTime.value = this.changeClock.value
     }
@@ -1850,6 +1851,21 @@ function buildGeometry(mesh: ColumnMesh, now: number): BufferGeometry {
 
   geometry.computeBoundingSphere()
   return geometry
+}
+
+/**
+ * Hands faces that have finished fading back to the solid blocks' material.
+ *
+ * The fade material writes no depth - a face half way in would hide what is
+ * behind it - and the lens reads depth to decide what is in focus, so for as
+ * long as a face is drawn with it the lens sees the sky there and blurs it. A
+ * cut raised from the bottom of a plot to the top would leave the whole plot
+ * soft until the next slice. Once the fade is over the faces are ordinary
+ * blocks: those that came back are whole, and those that went are fully
+ * transparent and fall to the alpha test like any cut-out texel.
+ */
+function settleFades(geometry: BufferGeometry): void {
+  for (const group of geometry.groups) if (group.materialIndex === 2) group.materialIndex = 0
 }
 
 /**
