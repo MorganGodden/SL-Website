@@ -254,6 +254,17 @@ let lastSlots: HoverSlot[] = []
  * letting a plot go is animated rather than a cut.
  */
 let focusKey: string | null = null
+/**
+ * Cells held to the player they were holding when a plot was picked from them.
+ *
+ * The lattice is dealt out again whenever the board's order changes - more
+ * plots arriving after a shared link has already put one on the stage, a new
+ * plot published, a rank changing - and the cell would go on to hold somebody
+ * else, under the name of the player who was picked. A pin outlasts the focus
+ * until its cell is off screen, so a plot that has gone back to a cell now
+ * dealt to someone else is not swapped for theirs in front of the visitor.
+ */
+const pins = new Map<string, string>()
 /** 1 while the camera is going in to the focused plot, 0 while it comes out. */
 let focusTarget = 0
 let focusProgress = 0
@@ -346,17 +357,21 @@ function frame(now: number): void {
   const cells = layoutGrid(order.length, spacing, scroll.x, scroll.z, renderer.viewExtent)
 
   const renderSlots: HoverSlot[] = []
+  const inView = new Set<string>()
   for (const cell of cells) {
-    const uuid = order[cell.playerIndex]
+    const key = `${cell.gx}:${cell.gz}`
+    inView.add(key)
+    const uuid = pins.get(key) ?? order[cell.playerIndex]
     if (!columns.has(uuid)) continue
     renderSlots.push({
       uuid,
       x: cell.x,
       z: cell.z,
       turn: squarePlots ? cell.turn : cell.turn & 2,
-      key: `${cell.gx}:${cell.gz}`
+      key
     })
   }
+  for (const key of pins.keys()) if (key !== focusKey && !inView.has(key)) pins.delete(key)
 
   renderer.syncPlots(renderSlots)
   lastSlots = renderSlots
@@ -523,9 +538,8 @@ function setSlice(cut: number): void {
 
 /** The record for whichever player is on the stage. */
 function focusedColumn(): ColumnRecord | undefined {
-  if (focusKey === null) return undefined
-  const slot = lastSlots.find((entry) => entry.key === focusKey)
-  return slot ? columns.get(slot.uuid) : undefined
+  const uuid = focusKey === null ? undefined : pins.get(focusKey)
+  return uuid === undefined ? undefined : columns.get(uuid)
 }
 
 async function runSlice(): Promise<void> {
@@ -754,6 +768,9 @@ function onMesh(mesh: DecodeSuccess): void {
 
 function onRemoved(uuid: string): void {
   needsRender = true
+  // A plot that is no longer published has nothing left to stand on the stage.
+  if (focus.value?.uuid === uuid) releaseFocus()
+  for (const [key, pinned] of pins) if (pinned === uuid) pins.delete(key)
   renderer?.removeColumn(uuid)
   columns.delete(uuid)
   recomputeOrder()
@@ -982,6 +999,7 @@ function takeFocus(key: string, uuid: string): void {
   if (!column) return
 
   focusKey = key
+  pins.set(key, uuid)
   focusTarget = 1
   focusSpin = 0
   renderer?.setFocusSpin(0)
