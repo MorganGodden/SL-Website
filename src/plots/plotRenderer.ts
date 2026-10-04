@@ -147,9 +147,11 @@ const GLINT_BASE = 0.05
  *
  * In pitches because the board is framed by its pitch: plots are a server
  * setting, and a board of bigger ones is the same picture from further out.
- * Set by eye at 26 units on a board of one-chunk plots, 18 units apart.
+ * Set by eye at 26 units on a board of one-chunk plots, 18 units apart, then
+ * half as long again when the blur was eased in and out: an eased ramp is
+ * steeper in the middle, and this keeps it no steeper than the straight one.
  */
-const DOF_RANGE = 26 / 18
+const DOF_RANGE = 39 / 18
 const DOF_RADIUS = 5.5
 /** Taps in the blur. Enough for a smooth disc at that radius. */
 const DOF_TAPS = 12
@@ -1959,7 +1961,8 @@ function buildDofMaterial(): ShaderMaterial {
       float confusion(vec2 uv) {
         float depth = texture2D(tDepth, uv).x;
         float viewZ = orthographicDepthToViewZ(depth, uNear, uFar);
-        return clamp((abs(viewZ - uFocus) - uSharp) / uRange, 0.0, 1.0);
+        // Eased at both ends, so the blur neither starts nor tops out at a line.
+        return smoothstep(0.0, 1.0, (abs(viewZ - uFocus) - uSharp) / uRange);
       }
 
       void main() {
