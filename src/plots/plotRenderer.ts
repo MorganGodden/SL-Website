@@ -154,6 +154,9 @@ const DOF_RADIUS = 5.5
 /** Taps in the blur. Enough for a smooth disc at that radius. */
 const DOF_TAPS = 12
 
+/** How much of the sun a shadow takes away, 0 to 1. */
+const SHADOW_STRENGTH = 0.7
+
 /** The sky the board is lit by: cool overhead, pale down at the horizon. */
 const SKY_ZENITH = '#9fc4f0'
 const SKY_HORIZON = '#dcebff'
@@ -351,12 +354,31 @@ function buildChangeDepthMaterial(clock: { value: number }): MeshDepthMaterial {
   material.onBeforeCompile = (shader) => {
     patchChangeVertex(shader, clock)
 
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n        varying vec3 vObject;`)
+      .replace(
+        '#include <project_vertex>',
+        `vObject = transformed;\n        #include <project_vertex>`
+      )
+
+    // Plants cast nothing. They are lit facing up, like the ground they grow
+    // from, which puts the shadow lookup's normal offset along their own plane
+    // rather than off it: anything they cast would land on themselves as acne.
+    // They are the only faces in a plot that are not square to an axis, which
+    // is how they are told apart here.
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\n        varying float vChange;`)
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying float vChange;
+        varying vec3 vObject;`
+      )
       .replace(
         '#include <alphatest_fragment>',
         `#include <alphatest_fragment>
-        if (vChange < 0.5) discard;`
+        if (vChange < 0.5) discard;
+        vec3 face = normalize(cross(dFdx(vObject), dFdy(vObject)));
+        if (abs(face.x * face.z) > 0.25) discard;`
       )
   }
 
@@ -801,6 +823,9 @@ export class PlotRenderer {
     // shadow off the block casting it, leaving a lit sliver at the block's foot.
     this.sun.shadow.bias = 0
     // normalBias is set in fitShadowCamera, where the texel size is known.
+    // Shade, not night: some of the sun still gets in, as it does on a bright
+    // day with the snow throwing light back up into everything.
+    this.sun.shadow.intensity = SHADOW_STRENGTH
     this.scene.add(this.sun)
     this.scene.add(this.sun.target)
 

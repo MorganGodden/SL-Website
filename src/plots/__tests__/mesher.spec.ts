@@ -349,8 +349,15 @@ describe('meshColumn block shapes', () => {
     for (let face = 0; face < mesh.faceCount; face++) {
       expect(faceBrightness(mesh, face)).toBeCloseTo(faceBrightness(mesh, 0))
     }
-    // The planes lie across the block rather than along its faces.
-    expect(countFaces(mesh, (nx, ny, nz) => ny === 0 && nx !== 0 && nz !== 0)).toBe(4)
+    // Lit as the ground is, facing up, whichever side of a plane is showing.
+    expect(countFaces(mesh, (nx, ny, nz) => nx === 0 && ny === 1 && nz === 0)).toBe(4)
+    // The planes lie across the block rather than along its faces: the bottom
+    // edge of each runs corner to corner.
+    for (let face = 0; face < mesh.faceCount; face++) {
+      const at = face * 4 * 3
+      expect(Math.abs(mesh.positions[at + 3] - mesh.positions[at])).toBe(1)
+      expect(Math.abs(mesh.positions[at + 5] - mesh.positions[at + 2])).toBe(1)
+    }
   })
 
   it('draws a fence as a post and its rails', () => {

@@ -221,7 +221,9 @@ const NOWHERE: ShapeContext = {
  *
  * Drawn from both sides, because a plant has no inside and the materials cull
  * back faces, and lit flat, because shading a flower by the blocks around it
- * only makes it look grubby.
+ * only makes it look grubby. Flat means facing up, like the ground it grows
+ * from: given the planes' own normals, two of its four faces turn their backs
+ * on the sun and a tuft of grass comes out half black.
  */
 function emitCross(
   x: number,
@@ -234,15 +236,14 @@ function emitCross(
 ): void {
   // Corner to corner across the block, one plane each way.
   const planes = [
-    { x0: 0, z0: 0, x1: 1, z1: 1, nx: -90, nz: 90 },
-    { x0: 1, z0: 0, x1: 0, z1: 1, nx: 90, nz: 90 }
+    { x0: 0, z0: 0, x1: 1, z1: 1 },
+    { x0: 1, z0: 0, x1: 0, z1: 1 }
   ]
 
   const open = [3, 3, 3, 3]
 
   for (const plane of planes) {
     for (const back of [false, true]) {
-      const side = back ? -1 : 1
       const [ax, az, bx, bz] = back
         ? [plane.x1, plane.z1, plane.x0, plane.z0]
         : [plane.x0, plane.z0, plane.x1, plane.z1]
@@ -252,7 +253,7 @@ function emitCross(
         // top of them, which winds the quad the right way round.
         const far = v === 1 || v === 2
         const up = v >= 2
-        normals.push(plane.nx * side, 0, plane.nz * side)
+        normals.push(0, 127, 0)
         uvs.push(far === back ? tile.u0 : tile.u1, up ? tile.v1 : tile.v0)
       }
 
