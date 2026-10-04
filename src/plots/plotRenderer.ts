@@ -36,6 +36,9 @@ import {
   WebGLRenderer,
   type Texture
 } from 'three'
+import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import atlasUrl from '@/assets/textures/blocks.png'
 import { faceTilesForEntry, tilePixelRect } from './blockAtlas'
 import {
@@ -156,6 +159,17 @@ const DOF_RADIUS = 5.5
 /** Taps in the blur. Enough for a smooth disc at that radius. */
 const DOF_TAPS = 12
 
+/**
+ * The glow off anything bright: how bright it has to be, how strong, how wide.
+ *
+ * Read from the scene's own light before tone mapping, so the threshold is a
+ * brightness, not a colour: sunlit snow and pale stone clear it,
+ * grass and the sky do not. Wide and faint, so it reads as haze, not halo.
+ */
+const BLOOM_THRESHOLD = 0.5
+const BLOOM_STRENGTH = 0.8
+const BLOOM_RADIUS = 0.8
+
 /** How much of the sun a shadow takes away, 0 to 1. */
 const SHADOW_STRENGTH = 0.7
 
@@ -166,8 +180,8 @@ const SKY_HORIZON = '#dcebff'
 /**
  * The same sky as a backdrop, authored deeper than it is meant to look.
  *
- * The lens pass is the only thing now drawing to the canvas, so everything goes
- * through the tone mapping it applies - including a backdrop that is not lit
+ * Everything is drawn off screen and tone mapped on the way out, so everything
+ * goes through that tone mapping - including a backdrop that is not lit
  * and has no business being tone mapped at all. ACES lifts and desaturates it:
  * the zenith above comes out of it as #becfdf, a grey haze rather than a sky.
  * These are those colours wound back so that what lands on the screen is the
@@ -503,6 +517,19 @@ export class PlotRenderer {
   /** Scratch vector for the drawing buffer's size, read on every resize. */
   private bufferSize = new Vector2()
 
+  /**
+   * What the lens makes of the picture, in open-ended light, for the bloom to
+   * read and add its glow to; then the same tone mapped, for the anti-aliasing.
+   *
+   * Neither is multisampled. Three discards a multisampled buffer's colour once
+   * it has been resolved, so the bloom cannot be added back into the scene's.
+   */
+  private lensTarget: WebGLRenderTarget
+  private outputTarget: WebGLRenderTarget
+  private bloom: UnrealBloomPass
+  private output = new OutputPass()
+  private fxaa = new FXAAPass()
+
   private focusedMesh: Mesh | null = null
   /**
    * A sliced copy of the focused plot, drawn in place of its own geometry.
@@ -623,7 +650,11 @@ export class PlotRenderer {
   private scrollZ = 0
 
   constructor(private canvas: HTMLCanvasElement) {
-    this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true })
+    // No multisampling on the canvas itself: only full-screen passes are ever
+    // drawn to it. The scene is multisampled off screen, and the edges that
+    // gets nothing from - cut-out leaves and grass, highlights too bright for
+    // their samples to average - are smoothed by FXAA on the way out.
+    this.renderer = new WebGLRenderer({ canvas, antialias: false, alpha: true })
     this.renderer.outputColorSpace = SRGBColorSpace
     this.renderer.toneMapping = ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.15
@@ -681,7 +712,7 @@ export class PlotRenderer {
 
     // Half float, because the board is drawn into this before it is tone
     // mapped: three only tone maps what goes straight to the canvas, so the
-    // buffer holds open-ended light and the lens pass brings it down at the end.
+    // buffer holds open-ended light and the output pass brings it down at the end.
     const buffer = this.renderer.getDrawingBufferSize(this.bufferSize)
     this.sceneTarget = new WebGLRenderTarget(buffer.x, buffer.y, {
       type: HalfFloatType,
@@ -695,6 +726,16 @@ export class PlotRenderer {
     this.dofQuad = new Mesh(new PlaneGeometry(2, 2), this.dofMaterial)
     this.dofQuad.frustumCulled = false
     this.dofScene.add(this.dofQuad)
+
+    this.lensTarget = new WebGLRenderTarget(buffer.x, buffer.y, { type: HalfFloatType })
+    this.outputTarget = new WebGLRenderTarget(buffer.x, buffer.y)
+    this.bloom = new UnrealBloomPass(
+      new Vector2(buffer.x, buffer.y),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD
+    )
+    this.fxaa.renderToScreen = true
 
     // Every pass is drawn into the same buffer, so clearing is done once, by
     // hand, at the top of the frame.
@@ -1572,6 +1613,10 @@ export class PlotRenderer {
 
     const buffer = this.renderer.getDrawingBufferSize(this.bufferSize)
     this.sceneTarget.setSize(buffer.x, buffer.y)
+    this.lensTarget.setSize(buffer.x, buffer.y)
+    this.outputTarget.setSize(buffer.x, buffer.y)
+    this.bloom.setSize(buffer.x, buffer.y)
+    this.fxaa.setSize(buffer.x, buffer.y)
 
     this.updateCamera()
     this.rebuildGround()
@@ -1709,10 +1754,13 @@ export class PlotRenderer {
       this.renderer.render(this.scene, this.camera)
     }
 
-    this.renderer.setRenderTarget(null)
-    this.renderer.clear()
+    // Every pass after the scene covers its whole target, so none is cleared.
+    this.renderer.setRenderTarget(this.lensTarget)
     this.focusLens()
     this.renderer.render(this.dofScene, this.veilCamera)
+    this.bloom.render(this.renderer, this.lensTarget, this.lensTarget, 0, false)
+    this.output.render(this.renderer, this.outputTarget, this.lensTarget, 0, false)
+    this.fxaa.render(this.renderer, this.outputTarget, this.outputTarget, 0, false)
   }
 
   /**
@@ -1839,6 +1887,11 @@ export class PlotRenderer {
     this.dofMaterial.dispose()
     this.sceneTarget.depthTexture?.dispose()
     this.sceneTarget.dispose()
+    this.lensTarget.dispose()
+    this.outputTarget.dispose()
+    this.bloom.dispose()
+    this.output.dispose()
+    this.fxaa.dispose()
     this.fadeMaterial.dispose()
     this.veilMaterial.dispose()
     this.glintMaterial.dispose()
@@ -1987,10 +2040,8 @@ function buildDofMaterial(): ShaderMaterial {
           weight += share;
         }
 
+        // Still in open-ended light: the bloom comes next, then the tone mapping.
         gl_FragColor = sum / weight;
-
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
       }
     `
   })
