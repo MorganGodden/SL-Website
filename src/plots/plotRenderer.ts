@@ -173,6 +173,14 @@ const BLOOM_RADIUS = 0.8
 /** How much of the sun a shadow takes away, 0 to 1. */
 const SHADOW_STRENGTH = 0.7
 
+/**
+ * Contrast, as a power about mid grey: above 1 lights get lighter and shade
+ * deeper while the picture as a whole stays as bright. Applied to the light
+ * itself, before tone mapping, so the brightest whites roll off rather than
+ * clip.
+ */
+const CONTRAST = 1.1
+
 /** The sky the board is lit by: cool overhead, pale down at the horizon. */
 const SKY_ZENITH = '#9fc4f0'
 const SKY_HORIZON = '#dcebff'
@@ -2042,6 +2050,7 @@ function buildDofMaterial(): ShaderMaterial {
 
         // Still in open-ended light: the bloom comes next, then the tone mapping.
         gl_FragColor = sum / weight;
+        gl_FragColor.rgb = pow(max(gl_FragColor.rgb, 0.0) / 0.18, vec3(${CONTRAST.toFixed(2)})) * 0.18;
       }
     `
   })
