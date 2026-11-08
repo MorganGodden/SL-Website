@@ -4,6 +4,7 @@ import type { SeasonSchedule } from '../registry'
 
 const SCHEDULE: SeasonSchedule = {
   startsAt: '2026-12-04T18:00:00Z',
+  lastDay: '2026-12-19',
   hours: { open: '18:00', close: '00:00', timeZone: 'Europe/London', label: 'UK time' }
 }
 
