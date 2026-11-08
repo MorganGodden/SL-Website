@@ -29,6 +29,8 @@ const props = defineProps<{
    * whole list while it loads.
    */
   plotted?: string[]
+  /** The scores could not be fetched: said instead of "No scores yet". */
+  failed?: boolean
 }>()
 
 const emit = defineEmits<{ select: [entry: LeaderboardEntry] }>()
@@ -72,7 +74,16 @@ const SKELETON_WIDTHS = ['42%', '28%', '55%', '35%', '48%', '31%', '44%', '38%']
 
 /** What a screen reader hears for a row, which the eye reads as columns. */
 function rowLabel(entry: LeaderboardEntry): string {
-  return `Rank ${entry.rank}, ${entry.playerName}, ${entry.score.toLocaleString()} points`
+  const logged = entry.collection
+    ? `, ${entry.collection.collected.toLocaleString()} of ${entry.collection.total.toLocaleString()} items`
+    : ''
+  return `Rank ${entry.rank}, ${entry.playerName}, ${entry.score.toLocaleString()} points${logged}`
+}
+
+/** How far through the log they are, as a width for the bar. */
+function progress(entry: LeaderboardEntry): string {
+  const { collected, total } = entry.collection ?? { collected: 0, total: 0 }
+  return `${total > 0 ? (collected / total) * 100 : 0}%`
 }
 </script>
 
@@ -173,12 +184,21 @@ function rowLabel(entry: LeaderboardEntry): string {
               >
                 <span class="skeleton h-3 w-6 shrink-0 rounded" />
                 <span class="skeleton size-5 shrink-0 rounded-sm" />
-                <span class="skeleton h-3 rounded" :style="{ width }" />
+                <span class="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <span class="skeleton h-3 rounded" :style="{ width }" />
+                  <span class="skeleton h-1.5 w-28 rounded" />
+                </span>
                 <span class="skeleton ml-auto h-3 w-10 shrink-0 rounded" />
               </li>
             </ul>
             <p v-else-if="matches.length === 0" class="px-2 py-6 text-center text-sm text-slate-600">
-              {{ rows.length === 0 ? 'No scores yet' : `No player matching “${search}”` }}
+              {{
+                rows.length > 0
+                  ? `No player matching “${search}”`
+                  : failed
+                    ? 'Scores could not be reached'
+                    : 'No scores yet'
+              }}
             </p>
 
             <ul v-else class="flex flex-col gap-0.5">
@@ -212,8 +232,25 @@ function rowLabel(entry: LeaderboardEntry): string {
                     loading="lazy"
                     class="size-5 shrink-0 rounded-sm"
                   />
-                  <span class="truncate text-sm font-semibold text-slate-900">
-                    {{ entry.playerName }}
+                  <span class="flex min-w-0 flex-col">
+                    <span class="truncate text-sm font-semibold text-slate-900">
+                      {{ entry.playerName }}
+                    </span>
+                    <!-- How much of the Collection Log they have, which is what the score counts. -->
+                    <span
+                      v-if="entry.collection"
+                      aria-hidden="true"
+                      class="flex items-center gap-2 text-[11px] leading-4 tabular-nums text-slate-500"
+                    >
+                      <span class="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-slate-900/10">
+                        <span
+                          class="block h-full rounded-full bg-primary-500"
+                          :style="{ width: progress(entry) }"
+                        />
+                      </span>
+                      {{ entry.collection.collected.toLocaleString() }} /
+                      {{ entry.collection.total.toLocaleString() }}
+                    </span>
                   </span>
                   <span class="ml-auto shrink-0 text-sm tabular-nums text-slate-700">
                     {{ entry.score.toLocaleString() }}
@@ -223,9 +260,6 @@ function rowLabel(entry: LeaderboardEntry): string {
             </ul>
           </div>
 
-          <p class="px-3 pb-2 text-center text-[11px] text-slate-500">
-            Scores are provisional placeholders while Season 1 scoring is built.
-          </p>
         </div>
       </Transition>
     </section>

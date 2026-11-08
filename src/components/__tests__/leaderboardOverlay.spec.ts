@@ -32,8 +32,9 @@ describe('leaderboard overlay', () => {
   it('stands placeholder rows in for the list while scores are loading', async () => {
     const wrapper = await mountOverlay({ loading: true })
 
-    // Eight rows of four bars each, in the shape the real rows will take.
-    expect(wrapper.findAll('.skeleton')).toHaveLength(32)
+    // Eight rows of five bars each, in the shape the real rows will take:
+    // rank, head, name with its progress under it, score.
+    expect(wrapper.findAll('.skeleton')).toHaveLength(40)
     // The wait is still announced, now that there is no line of text saying so.
     expect(wrapper.get('[role="status"]').attributes('aria-label')).toBe('Fetching scores')
     // And it is placeholders rather than rows: nothing here is a control.

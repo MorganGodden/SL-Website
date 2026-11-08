@@ -23,6 +23,13 @@ leaves, water) have their tint baked in, animated textures are reduced to their
 first frame, and textures on blocks the board treats as solid are composited
 onto an opaque background.
 
+`items.png` is baked from the same pack for the Collection Log's icons: the
+pack's flat item textures, 16x16 each and first frame only, with the few items
+the game draws in layers (potions, leather armour, tipped arrows) composited
+and tinted as an undyed, plain one looks, and a shulker box's lid cut from its
+entity sheet. An item that is a block in the hand takes its icon from
+`blocks.png` instead.
+
 No other part of the pack is redistributed here, and the pack itself is not
 checked in.
 
@@ -39,6 +46,14 @@ Either the `.zip` or an unpacked pack folder works. That rewrites both
 together — the table indexes into the image, so one is meaningless without the
 other. Which blocks are baked, and which textures each face uses, is in
 `scripts/lib/blockTextures.mjs`.
+
+The item icons are rebuilt the same way, from the `.zip`:
+
+```sh
+npm run build:item-icons -- ~/Downloads/'Pixel Perfection 26.3-97.1.zip'
+```
+
+which rewrites `items.png` and `src/plots/itemIcons.generated.ts` together.
 
 Swapping in a different pack is the same command with a different archive: the
 spec is written against vanilla texture names, which any pack that replaces

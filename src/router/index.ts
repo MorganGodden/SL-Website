@@ -7,11 +7,12 @@ import { SEASONS, defaultSeason, type SeasonId } from '@/seasons/registry'
  * branching on a season id.
  *
  * Views are lazily imported so that visiting the Season 0 archive never
- * downloads the Season 1 renderer (three.js) it has no use for.
+ * downloads the Season 1 renderer (three.js) it has no use for. Season 1 goes
+ * through its gate, which fetches the board only once a visitor is let in.
  */
 const VIEWS: Record<SeasonId, () => Promise<unknown>> = {
   s0: () => import('@/views/SeasonZeroView.vue'),
-  s1: () => import('@/views/SeasonOneView.vue')
+  s1: () => import('@/views/SeasonOneGate.vue')
 }
 
 const seasonRoutes: RouteRecordRaw[] = SEASONS.map((season) => ({

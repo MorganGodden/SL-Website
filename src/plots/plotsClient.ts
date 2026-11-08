@@ -27,6 +27,35 @@ export function plotsConfigured(): boolean {
   return BASE_URL.length > 0
 }
 
+/** How long `/health` gets to answer before the server counts as down. */
+const HEALTH_TIMEOUT_MS = 5000
+
+/** True if the plugin answers `/health` in time and says it is well. Never throws. */
+export async function serverAnswers(): Promise<boolean> {
+  try {
+    const response = await fetch(`${BASE_URL}/health`, {
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS)
+    })
+    return response.ok && (await response.json())?.status === 'ok'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * `GET` a JSON document from the plugin, with the shared secret when there is
+ * one. Null for a 404, which is how the plugin says there is nothing there;
+ * anything else unexpected throws.
+ */
+export async function fetchPluginJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+  const response = await fetch(`${BASE_URL}${path}`, { headers: headers(), signal })
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: ${response.status} ${response.statusText}`)
+  }
+  return (await response.json()) as T
+}
+
 /** `GET /plots` — the change index. One request tells us every plot's etag. */
 export async function fetchPlotIndex(signal?: AbortSignal): Promise<PlotIndexEntry[]> {
   const response = await fetch(`${BASE_URL}/plots`, { headers: headers(), signal })

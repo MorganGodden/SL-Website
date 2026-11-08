@@ -43,6 +43,10 @@ const emit = defineEmits<{
   escape: []
   /** Which players the board is actually drawing a plot for. */
   plots: [string[]]
+  /** The focused player's collection log was asked for. */
+  log: [{ uuid: string; name: string }]
+  /** How far up from the bottom of the window the focused plot's card reaches, head and all, in CSS pixels. */
+  dock: [number]
 }>()
 
 /**
@@ -1068,6 +1072,11 @@ function measureControls(): void {
   if (!card) return
   renderer?.setFocusReserve({ x: 0, y: Math.max(card.offsetHeight, BAR_CLEARANCE) })
   needsRender = true
+  // The owner's head stands up past the card's top edge, by however far the bust
+  // reaches above the dock. Offsets rather than boxes: they ignore the arrival's
+  // transform, so the reach is the card's at rest even mid-transition.
+  const bust = card.querySelector<HTMLElement>('.bust')
+  emit('dock', card.offsetHeight - Math.min(0, bust?.offsetTop ?? 0))
 }
 
 useResizeObserver(cardBox, measureControls)
@@ -1273,6 +1282,7 @@ onBeforeUnmount(() => {
           @step="focusPlayer"
           @slice="setSlice"
           @back="releaseFocus"
+          @log="emit('log', { uuid: focus.uuid, name: focus.name })"
         />
       </div>
     </Transition>

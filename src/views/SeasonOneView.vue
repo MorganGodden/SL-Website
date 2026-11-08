@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LeaderboardOverlay from '@/components/season1/leaderboardOverlay.vue'
 import PlotScene from '@/components/season1/plotScene.vue'
@@ -10,14 +10,26 @@ import type { BoardStatus } from '@/plots/plotBoard'
 
 /**
  * Season 1: the plot visualisation is the page, with the leaderboard floating
- * over it. Scores come from fixtures via the data-access module — there is no
- * Season 1 scoring endpoint yet.
+ * over it. Scores are the plugin's Collection Log, fetched through the
+ * data-access module and refreshed while the page is open.
  */
+
+/** How often the scores are fetched again, in milliseconds. */
+const SCORES_REFRESH_MS = 30_000
+
+/** Only fetched when someone opens a log, and the icon tables with it. */
+const CollectionSheet = defineAsyncComponent(() => import('@/components/season1/collectionSheet.vue'))
 const scene = ref<InstanceType<typeof PlotScene> | null>(null)
 const rows = ref<LeaderboardEntry[]>([])
 /** Players the board is drawing, so the leaderboard knows which rows lead anywhere. */
 const plotted = ref<string[]>([])
 const loading = ref(true)
+/** The last fetch of the scores failed, and there were none to keep showing. */
+const scoresFailed = ref(false)
+/** Whose collection log is open over the board, if anyone's. */
+const logOf = ref<{ uuid: string; name: string } | null>(null)
+/** How far up the window the focused plot's card reaches, which the log stays clear of. */
+const cardReach = ref(0)
 const boardStatus = ref<BoardStatus | null>(null)
 /**
  * The leaderboard covers the board, so the board folds it away while it needs
@@ -84,9 +96,25 @@ function onBoardFocus(target: { uuid: string; name: string } | null): void {
   void router.replace({ query: { ...route.query, plot: target?.name } })
 }
 
-getLeaderboard('s1')
-  .then((entries) => (rows.value = entries))
-  .finally(() => (loading.value = false))
+/**
+ * Keeps the last good scores through a failed fetch: a blip in the connection
+ * should not empty the leaderboard for the thirty seconds until the next one.
+ */
+function refreshScores(): void {
+  getLeaderboard('s1')
+    .then((entries) => {
+      rows.value = entries
+      scoresFailed.value = false
+    })
+    .catch((error) => {
+      console.warn('[scores] could not load:', error)
+      scoresFailed.value = rows.value.length === 0
+    })
+    .finally(() => (loading.value = false))
+}
+refreshScores()
+const scoresTimer = setInterval(refreshScores, SCORES_REFRESH_MS)
+onBeforeUnmount(() => clearInterval(scoresTimer))
 
 </script>
 
@@ -97,7 +125,7 @@ getLeaderboard('s1')
       the panel is a sheet of glass, and glass reads as glass when what is
       behind it is softened rather than merely dimmed.
     -->
-    <div class="board" :class="{ 'board--behind-glass': leaderboardExpanded }">
+    <div class="board" :class="{ 'board--behind-glass': leaderboardExpanded || logOf }">
       <PlotScene
         ref="scene"
         :rows="rows"
@@ -107,6 +135,8 @@ getLeaderboard('s1')
         @dismiss="leaderboardExpanded = false"
         @escape="leaderboardExpanded = !leaderboardExpanded"
         @focused="onBoardFocus"
+        @log="logOf = $event"
+        @dock="cardReach = $event"
       />
     </div>
 
@@ -114,6 +144,7 @@ getLeaderboard('s1')
       v-model:expanded="leaderboardExpanded"
       :rows="rows"
       :loading="loading"
+      :failed="scoresFailed"
       :plotted="plotted"
       @select="scene?.focusPlayer($event.playerUuid)"
     >
@@ -121,6 +152,16 @@ getLeaderboard('s1')
         <LiveStatus :status="boardStatus" />
       </template>
     </LeaderboardOverlay>
+
+    <Transition name="sheet">
+      <CollectionSheet
+        v-if="logOf"
+        :key="logOf.uuid"
+        v-bind="logOf"
+        :below="cardReach"
+        @close="logOf = null"
+      />
+    </Transition>
   </div>
 </template>
 
@@ -141,8 +182,21 @@ getLeaderboard('s1')
   filter: blur(3px);
 }
 
+/* The log comes and goes the same way: a short fade, in and out alike. */
+.sheet-enter-active,
+.sheet-leave-active {
+  transition: opacity 160ms ease;
+}
+
+.sheet-enter-from,
+.sheet-leave-to {
+  opacity: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .board {
+  .board,
+  .sheet-enter-active,
+  .sheet-leave-active {
     transition: none;
   }
 }

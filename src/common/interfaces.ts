@@ -5,6 +5,8 @@ export interface LeaderboardEntry {
   playerName: string
   score: number
   rank: number
+  /** How much of the Collection Log they have; seasons scored another way have none. */
+  collection?: { collected: number; total: number }
 }
 
 /** The shape of the static leaderboard files under `src/data/seasons/`. */

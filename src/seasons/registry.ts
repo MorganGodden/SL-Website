@@ -15,6 +15,17 @@ export interface SeasonFeatures {
   plots: boolean
 }
 
+/** When a season's server can be played on. */
+export interface SeasonSchedule {
+  /** The instant the season opens. Before it, the season's pages show a countdown instead. */
+  startsAt: string
+  /**
+   * The server's daily opening hours, on its own clock. Must match `hours` in
+   * the plugin's config.yml: a close at or before the open wraps through midnight.
+   */
+  hours: { open: string; close: string; timeZone: string; label: string }
+}
+
 export interface SeasonDefinition {
   id: SeasonId
   /** Full display name, e.g. for page headings. */
@@ -29,6 +40,8 @@ export interface SeasonDefinition {
    */
   dataSource: 'frozen' | 'fixtures' | 'live'
   features: SeasonFeatures
+  /** Only for a season with a live server to gate its pages on. */
+  schedule?: SeasonSchedule
 }
 
 export const SEASONS: readonly SeasonDefinition[] = [
@@ -37,8 +50,13 @@ export const SEASONS: readonly SeasonDefinition[] = [
     name: 'Snow Leagues 1',
     shortName: 'SL-1',
     route: '/s1',
-    dataSource: 'fixtures',
-    features: { leaderboard: true, plots: true }
+    dataSource: 'live',
+    features: { leaderboard: true, plots: true },
+    schedule: {
+      // Friday 4 December 2026, 18:00 UK time (GMT, so UTC, in December).
+      startsAt: '2026-12-04T18:00:00Z',
+      hours: { open: '18:00', close: '00:00', timeZone: 'Europe/London', label: 'UK time' }
+    }
   },
   {
     id: 's0',

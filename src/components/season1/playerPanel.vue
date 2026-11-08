@@ -54,7 +54,7 @@ const props = defineProps<{
   landscape: boolean
 }>()
 
-const emit = defineEmits<{ step: [uuid: string]; slice: [cut: number]; back: [] }>()
+const emit = defineEmits<{ step: [uuid: string]; slice: [cut: number]; back: []; log: [] }>()
 
 const HINT = 'Drag to spin · scroll to zoom · Ctrl + scroll to slice'
 const HINT_TOUCH = 'Drag to spin · pinch to zoom'
@@ -538,6 +538,17 @@ onBeforeUnmount(() => {
       <i class="pi pi-times text-[11px]" aria-hidden="true" />
     </button>
 
+    <!-- Their collection log, which is what their score counts. -->
+    <button
+      type="button"
+      class="round log"
+      :aria-label="`Open ${name}'s collection log`"
+      title="Collection log"
+      @click="emit('log')"
+    >
+      <i class="pi pi-th-large text-[11px]" aria-hidden="true" />
+    </button>
+
     <p class="hint truncate text-[11px] leading-4 text-slate-600">
       {{ landscape ? HINT : HINT_TOUCH }}
     </p>
@@ -567,7 +578,7 @@ onBeforeUnmount(() => {
     'bust name  steps close'
     'bust score steps close'
     'bust slice slice reset'
-    'bust hint  hint  .';
+    'bust hint  hint  log';
   align-items: center;
   column-gap: 0.75rem;
   row-gap: 0.25rem;
@@ -641,6 +652,10 @@ onBeforeUnmount(() => {
   grid-area: close;
 }
 
+.log {
+  grid-area: log;
+}
+
 .hint {
   grid-area: hint;
 }
@@ -655,10 +670,10 @@ onBeforeUnmount(() => {
     --bust: 5.25rem;
     --lip: 1.5rem;
     --pad: 0.5rem;
-    grid-template-columns: var(--bust) minmax(0, 1fr) minmax(0, 13rem) minmax(0, 14rem) 2.25rem 2.25rem;
+    grid-template-columns: var(--bust) minmax(0, 1fr) minmax(0, 13rem) minmax(0, 14rem) 2.25rem 2.25rem 2.25rem;
     grid-template-areas:
-      'bust name  steps slice reset close'
-      'bust score steps slice reset close';
+      'bust name  steps slice reset close log'
+      'bust score steps slice reset close log';
     row-gap: 0.125rem;
     width: 100%;
   }
@@ -684,7 +699,7 @@ onBeforeUnmount(() => {
       'bust  score close'
       'steps steps steps'
       'slice slice reset'
-      'hint  hint  hint';
+      'hint  hint  log';
     row-gap: 0.375rem;
     width: min(100%, 24rem);
   }

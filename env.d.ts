@@ -15,6 +15,11 @@ interface ImportMetaEnv {
   readonly VITE_PLOTS_POLL_MS?: string
   /** Minecraft server address, shown as a "join" hint. */
   readonly VITE_SERVER_IP?: string
+  /**
+   * `true` lets a local build past Season 1's pre-season countdown, for
+   * previewing before the start. Never set it on the deployed site.
+   */
+  readonly VITE_SEASON_PREVIEW?: string
 }
 
 interface ImportMeta {
