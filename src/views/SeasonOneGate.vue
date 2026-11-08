@@ -73,7 +73,27 @@ const startsLocally = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit'
 }).format(startsAt)
 const hoursLine = `Open daily ${schedule.hours.open}–${schedule.hours.close} ${schedule.hours.label}`
+/** Read as a calendar date, in UTC, so no visitor's time zone can move it a day. */
+const lastDayLine = `Last day ${new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  day: 'numeric',
+  month: 'short',
+  timeZone: 'UTC'
+}).format(Date.parse(`${schedule.lastDay}T00:00:00Z`))}`
 const secondsLeft = computed(() => Math.max(0, Math.ceil((nextCheckAt.value - now.value) / 1000)))
+
+/** Where players join. The card leaves the line out when a build has none. */
+const SERVER = (import.meta.env.VITE_SERVER_IP ?? '').trim()
+const copied = ref(false)
+async function copyServer(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(SERVER)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 1500)
+  } catch {
+    // Some browsers refuse; the address is selectable text anyway.
+  }
+}
 </script>
 
 <template>
@@ -89,6 +109,7 @@ const secondsLeft = computed(() => Math.max(0, Math.ceil((nextCheckAt.value - no
         </p>
         <p class="mt-1 text-sm text-slate-600">{{ startsLocally }} your time</p>
         <p class="mt-3 text-sm text-slate-600">{{ hoursLine }}</p>
+        <p class="text-sm text-slate-600">{{ lastDayLine }}</p>
       </div>
 
       <div v-else class="mt-4">
@@ -113,6 +134,19 @@ const secondsLeft = computed(() => Math.max(0, Math.ceil((nextCheckAt.value - no
             </button>
           </div>
         </template>
+      </div>
+
+      <div v-if="SERVER" class="mt-4 flex items-center justify-between gap-3">
+        <p class="min-w-0 text-sm text-slate-600">
+          Server <span class="select-all break-all font-semibold text-slate-900">{{ SERVER }}</span>
+        </p>
+        <button
+          type="button"
+          class="shrink-0 rounded-lg bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-sm transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600"
+          @click="copyServer"
+        >
+          {{ copied ? 'Copied' : 'Copy' }}
+        </button>
       </div>
 
       <RouterLink

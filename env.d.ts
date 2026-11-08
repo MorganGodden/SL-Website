@@ -13,7 +13,7 @@ interface ImportMetaEnv {
   readonly VITE_PLOTS_SECRET?: string
   /** Poll interval for the /plots change index, in milliseconds. */
   readonly VITE_PLOTS_POLL_MS?: string
-  /** Minecraft server address, shown as a "join" hint. */
+  /** Minecraft server address, shown on the countdown card with a copy button. Blank hides it. */
   readonly VITE_SERVER_IP?: string
   /**
    * `true` lets a local build past Season 1's pre-season countdown, for

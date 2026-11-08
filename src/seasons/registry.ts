@@ -20,6 +20,11 @@ export interface SeasonSchedule {
   /** The instant the season opens. Before it, the season's pages show a countdown instead. */
   startsAt: string
   /**
+   * The season's last day, YYYY-MM-DD on the server's clock: it ends when the
+   * server closes that night. Must match season.last-day in the plugin's config.yml.
+   */
+  lastDay: string
+  /**
    * The server's daily opening hours, on its own clock. Must match `hours` in
    * the plugin's config.yml: a close at or before the open wraps through midnight.
    */
@@ -56,6 +61,7 @@ export const SEASONS: readonly SeasonDefinition[] = [
       // Saturday 28 November 2026, 18:00 UK time (GMT, so UTC, in November).
       // Must match season.first-day and hours.open in the plugin's config.yml.
       startsAt: '2026-11-28T18:00:00Z',
+      lastDay: '2026-12-19',
       hours: { open: '18:00', close: '00:00', timeZone: 'Europe/London', label: 'UK time' }
     }
   },

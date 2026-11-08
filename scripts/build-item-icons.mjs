@@ -75,28 +75,66 @@ const DYES = [
 ]
 
 /** The top of a shulker's lid, in the 64x64 entity sheet: a 16x12x16 box mapped from (0, 0). */
-const SHULKER_LID = [16, 0, 16, 16]
+const SHULKER_LID = [[16, 0, 16, 16, 0, 0]]
+
+/** A chest from the front, in the 64x64 chest sheet: the lid's front strip, the base's front, and the latch over the join. */
+const CHEST_FRONT = [
+  [14, 14, 14, 5, 0, 0],
+  [14, 33, 14, 10, 0, 5],
+  [1, 1, 2, 4, 6, 3]
+]
+
+/** A copper golem's face: the front of its 8x5x10 head, mapped from (0, 0) in the 64x64 golem sheet. */
+const GOLEM_FACE = [[10, 10, 8, 5, 0, 0]]
+
+/** The copper ages, by how an item id and a texture name each spell them. */
+const COPPER_AGES = [
+  ['', ''],
+  ['exposed_', '_exposed'],
+  ['weathered_', '_weathered'],
+  ['oxidized_', '_oxidized']
+]
 
 /**
- * Blocks the block atlas has no tile for under their own name, drawn from the
- * face that says what they are. A name with a folder is under `textures/`; one
- * with a `rect` is cut out of an entity sheet, as its piece of a 64px sheet.
+ * Items with no flat texture of their own name, drawn from what says what they
+ * are: a block face, or pieces of the sheet the game paints a model with. A
+ * name with a folder is under `textures/`; one with `parts` is assembled by
+ * assemble(). A list is layers, bottom first. Waxed copper needs no entry: it
+ * looks the same, and itemIcons.ts falls back to the unwaxed icon.
  */
 const FACES = {
   dispenser: 'block/dispenser_front',
   dropper: 'block/dropper_front',
   cartography_table: 'block/cartography_table_side1',
   calibrated_sculk_sensor: 'block/calibrated_sculk_sensor_top',
-  shulker_box: { from: 'entity/shulker/shulker', rect: SHULKER_LID },
+  shulker_box: { from: 'entity/shulker/shulker', parts: SHULKER_LID, size: [16, 16] },
   ...Object.fromEntries(
     DYES.map((dye) => [
       `${dye}_shulker_box`,
-      { from: `entity/shulker/shulker_${dye}`, rect: SHULKER_LID }
+      { from: `entity/shulker/shulker_${dye}`, parts: SHULKER_LID, size: [16, 16] }
     ])
-  )
+  ),
+  shield: { from: 'entity/shield/shield_base_nopattern', parts: [[1, 1, 12, 22, 0, 0]], size: [12, 22] },
+  ...Object.fromEntries(
+    COPPER_AGES.map(([item, texture]) => [
+      `${item}copper_chest`,
+      { from: `entity/chest/copper${texture}`, parts: CHEST_FRONT, size: [14, 15] }
+    ])
+  ),
+  ...Object.fromEntries(
+    COPPER_AGES.map(([item, texture]) => [
+      `${item}copper_golem_statue`,
+      [
+        { from: `entity/copper_golem/copper_golem${texture}`, parts: GOLEM_FACE, size: [8, 5] },
+        { from: `entity/copper_golem/copper_golem_eyes${texture}`, parts: GOLEM_FACE, size: [8, 5] }
+      ]
+    ])
+  ),
+  // Named by growth stage rather than by itself: the grown one's cap over its underside.
+  shelf_mushroom: { from: 'block/shelf_mushroom_stage1', unit: 16, parts: [[0, 0, 8, 8, 0, 0]], size: [8, 8] }
 }
 
-/** A recipe layer, whichever way it was written: a name, [name, tint], or { from, rect }. */
+/** A recipe layer, whichever way it was written: a name, [name, tint], or { from, parts, size }. */
 function layerOf(layer) {
   if (typeof layer === 'string') return { from: layer }
   if (Array.isArray(layer)) return { from: layer[0], tint: layer[1] }
@@ -129,7 +167,9 @@ function main() {
   }
   for (const [id, layers] of Object.entries({
     ...LAYERED,
-    ...Object.fromEntries(Object.entries(FACES).map(([id, face]) => [id, [face]]))
+    ...Object.fromEntries(
+      Object.entries(FACES).map(([id, face]) => [id, Array.isArray(face) ? face : [face]])
+    )
   })) {
     if (layers.every((layer) => has(layerOf(layer).from))) recipes[id] = layers
   }
@@ -141,12 +181,9 @@ function main() {
   ids.forEach((id, tile) => {
     const icon = new Bitmap(TILE, TILE)
     for (const layer of recipes[id]) {
-      const { from, tint, rect } = layerOf(layer)
+      const { from, tint, parts, size, unit } = layerOf(layer)
       let image = decodePng(zip.read(path(from)))
-      if (rect) {
-        const scale = image.width / 64
-        image = image.crop(...rect.map((n) => n * scale))
-      }
+      if (parts) image = assemble(image, parts, size, unit)
       over(icon, fit(image), tint)
     }
     const x0 = (tile % COLUMNS) * TILE
@@ -163,6 +200,29 @@ function main() {
   console.log(
     `items  ${sheet.width}x${sheet.height}, ${ids.length} icons -> ${SHEET_PATH.slice(ROOT.length + 1)}`
   )
+}
+
+/**
+ * Pieces of a sheet laid out on a canvas `size` units across, then centred in
+ * a square so that fit() keeps their shape. Each part is [x, y, width, height,
+ * toX, toY] in units of a sheet `unit` wide, so the same numbers suit a pack of
+ * any resolution. Later parts are drawn over earlier ones.
+ */
+function assemble(sheet, parts, [width, height], unit = 64) {
+  const scale = sheet.width / unit
+  const square = Math.max(width, height)
+  const left = Math.floor((square - width) / 2)
+  const top = Math.floor((square - height) / 2)
+  const out = new Bitmap(square * scale, square * scale)
+  for (const [x, y, w, h, toX, toY] of parts) {
+    for (let j = 0; j < h * scale; j++) {
+      for (let i = 0; i < w * scale; i++) {
+        const pixel = sheet.pixel(x * scale + i, y * scale + j)
+        if (pixel[3]) out.set((left + toX) * scale + i, (top + toY) * scale + j, pixel)
+      }
+    }
+  }
+  return out
 }
 
 /** Frame 0 of an animation, brought to one tile by nearest sampling. */
