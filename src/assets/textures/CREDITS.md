@@ -6,7 +6,11 @@ resource pack, by **XSSheep**, continued for current game versions by
 
 - Source: <https://www.curseforge.com/minecraft/texture-packs/pixel-perfection-freshly-updated>
 - Build used: `Pixel Perfection 26.3-97.1.zip`
-  (<https://mediafilez.forgecdn.net/files/8894/871/Pixel%20Perfection%2026.3-97.1.zip>)
+  (<https://mediafilez.forgecdn.net/files/8894/871/Pixel%20Perfection%2026.3-97.1.zip>).
+  The same build is on GitHub at
+  <https://github.com/NovaWostra/Pixel-Perfection-Chorus-Eddit>, commit
+  `c8fe33f`: a zip of that commit's `assets/` folder rebuilds `items.png`
+  byte for byte.
 - The pack is published for free use; it is credited here and on the board
   itself, in the corner of the plot scene.
 
@@ -26,9 +30,13 @@ onto an opaque background.
 `items.png` is baked from the same pack for the Collection Log's icons: the
 pack's flat item textures, 16x16 each and first frame only, with the few items
 the game draws in layers (potions, leather armour, tipped arrows) composited
-and tinted as an undyed, plain one looks, and a shulker box's lid cut from its
-entity sheet. An item that is a block in the hand takes its icon from
-`blocks.png` instead.
+and tinted as an undyed, plain one looks. Items the game draws as models have
+their icon assembled from pieces of the model's entity sheet: a shulker box's
+lid, a copper chest's front with its latch, a copper golem statue's face and
+eyes, and a shield's front. The shelf mushroom, whose textures are named by
+growth stage, takes the grown one's cap. An item that is a block in the hand
+takes its icon from `blocks.png` instead. The mace has none: the pack does not
+retexture it.
 
 No other part of the pack is redistributed here, and the pack itself is not
 checked in.
