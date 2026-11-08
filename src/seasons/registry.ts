@@ -53,8 +53,9 @@ export const SEASONS: readonly SeasonDefinition[] = [
     dataSource: 'live',
     features: { leaderboard: true, plots: true },
     schedule: {
-      // Friday 4 December 2026, 18:00 UK time (GMT, so UTC, in December).
-      startsAt: '2026-12-04T18:00:00Z',
+      // Saturday 28 November 2026, 18:00 UK time (GMT, so UTC, in November).
+      // Must match season.first-day and hours.open in the plugin's config.yml.
+      startsAt: '2026-11-28T18:00:00Z',
       hours: { open: '18:00', close: '00:00', timeZone: 'Europe/London', label: 'UK time' }
     }
   },
