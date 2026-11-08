@@ -1,0 +1,532 @@
+import { describe, it, expect } from 'vitest'
+import { Matrix4, Ray, Vector3 } from 'three'
+import {
+  ASSUMED_PLOT_WIDTH,
+  PLOT_GAP,
+  SCREEN_UP_ON_FLOOR,
+  besidePlot,
+  boardPitch,
+  focusGutter,
+  focusUnitsPerPixel,
+  layoutGrid,
+  pickColumn,
+  pickStride,
+  playerForCell,
+  rescaleScroll,
+  screenDeltaToWorld,
+  turnForCell,
+  widestPlot,
+  wrapDistance
+} from '../boardLayout'
+
+const SPACING = 16 + PLOT_GAP
+const EXTENT = { across: 150, near: 170, far: 170 }
+
+describe('pickStride', () => {
+  it('is coprime with the player count, so neighbours are never the same plot', () => {
+    for (let players = 3; players <= 30; players++) {
+      const stride = pickStride(players)
+      const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+      expect(gcd(stride, players)).toBe(1)
+    }
+  })
+
+  it('degrades safely for one or two players', () => {
+    expect(pickStride(1)).toBe(1)
+    expect(pickStride(2)).toBe(1)
+  })
+})
+
+describe('playerForCell', () => {
+  it('walks the whole player list along both axes', () => {
+    const players = 5
+    const stride = pickStride(players)
+    const alongX = new Set<number>()
+    const alongZ = new Set<number>()
+    for (let i = 0; i < players; i++) {
+      alongX.add(playerForCell(i, 0, players, stride))
+      alongZ.add(playerForCell(0, i, players, stride))
+    }
+    expect(alongX.size).toBe(players)
+    expect(alongZ.size).toBe(players)
+  })
+
+  it('does not put the same plot next to itself', () => {
+    for (const players of [3, 4, 5, 7, 12, 25]) {
+      const stride = pickStride(players)
+      for (let gx = -3; gx <= 3; gx++) {
+        for (let gz = -3; gz <= 3; gz++) {
+          const here = playerForCell(gx, gz, players, stride)
+          expect(playerForCell(gx + 1, gz, players, stride)).not.toBe(here)
+          expect(playerForCell(gx, gz + 1, players, stride)).not.toBe(here)
+        }
+      }
+    }
+  })
+
+  it('handles negative coordinates, which the lattice has in both directions', () => {
+    const stride = pickStride(5)
+    for (let gx = -20; gx < 20; gx++) {
+      const index = playerForCell(gx, -7, 5, stride)
+      expect(index).toBeGreaterThanOrEqual(0)
+      expect(index).toBeLessThan(5)
+    }
+  })
+
+  it('repeats with the player count', () => {
+    const stride = pickStride(7)
+    expect(playerForCell(0, 0, 7, stride)).toBe(playerForCell(7, 0, 7, stride))
+    expect(playerForCell(3, 2, 7, stride)).toBe(playerForCell(10, 2, 7, stride))
+  })
+})
+
+describe('wrapDistance', () => {
+  it('stays positive for a negative scroll', () => {
+    expect(wrapDistance(-1, 20)).toBe(19)
+    expect(wrapDistance(-21, 20)).toBe(19)
+  })
+
+  it('is zero at a whole number of periods', () => {
+    expect(wrapDistance(0, 20)).toBe(0)
+    expect(wrapDistance(40, 20)).toBe(0)
+    expect(wrapDistance(-40, 20)).toBe(0)
+  })
+})
+
+describe('layoutGrid', () => {
+  it('fills the view in both directions, not just one', () => {
+    const cells = layoutGrid(25, SPACING, 0, 0, EXTENT)
+    expect(cells.some((c) => c.z < -SPACING)).toBe(true)
+    expect(cells.some((c) => c.z > SPACING)).toBe(true)
+    expect(cells.some((c) => c.x < -SPACING)).toBe(true)
+    expect(cells.some((c) => c.x > SPACING)).toBe(true)
+  })
+
+  it('places plots on a lattice with the requested gap between them', () => {
+    const cells = layoutGrid(25, SPACING, 0, 0, EXTENT)
+    const xs = [...new Set(cells.map((c) => +c.x.toFixed(6)))].sort((a, b) => a - b)
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i] - xs[i - 1]).toBeCloseTo(SPACING, 6)
+    }
+    // Plots are 16 wide, so this is the floor showing between them.
+    expect(SPACING - 16).toBe(PLOT_GAP)
+  })
+
+  it('never stacks two plots in the same place', () => {
+    const cells = layoutGrid(25, SPACING, 37, -18, EXTENT)
+    const seen = new Set(cells.map((c) => `${c.x.toFixed(4)},${c.z.toFixed(4)}`))
+    expect(seen.size).toBe(cells.length)
+  })
+
+  it('repeats a single published plot across the whole lattice', () => {
+    const cells = layoutGrid(1, SPACING, 0, 0, EXTENT)
+    expect(cells.length).toBeGreaterThan(20)
+    expect(cells.every((c) => c.playerIndex === 0)).toBe(true)
+  })
+
+  it('shows every player somewhere on screen', () => {
+    const cells = layoutGrid(25, SPACING, 0, 0, { across: 400, near: 400, far: 400 })
+    expect(new Set(cells.map((c) => c.playerIndex)).size).toBe(25)
+  })
+
+  it('never pops a plot in or out inside the visible region', () => {
+    // Cells do enter and leave in whole diagonals at the very edge, because the
+    // cull boundary runs at 45 degrees to the lattice. What must never happen is
+    // a plot appearing or vanishing somewhere the viewer can actually see, so
+    // this checks a region comfortably inside the margin.
+    const inner = { across: EXTENT.across - 40, depth: EXTENT.near - 40 }
+    const isInner = (c: { x: number; z: number }) =>
+      Math.abs(c.x - c.z) < inner.across && Math.abs(c.x + c.z) < inner.depth
+
+    for (let step = 0; step < 60; step++) {
+      const now = layoutGrid(5, SPACING, step, 0, EXTENT)
+      const next = layoutGrid(5, SPACING, step + 1, 0, EXTENT)
+      const nextByPlace = new Map(
+        next.map((c) => [`${c.x.toFixed(4)},${c.z.toFixed(4)}`, c.playerIndex])
+      )
+
+      for (const cell of now.filter(isInner)) {
+        // One unit of scroll along x moves every plot one unit the other way.
+        const moved = `${(cell.x - 1).toFixed(4)},${cell.z.toFixed(4)}`
+        expect(nextByPlace.get(moved)).toBe(cell.playerIndex)
+      }
+    }
+  })
+
+  it('looks identical after scrolling a whole number of lattice periods', () => {
+    const players = 5
+    const period = SPACING * players
+    const key = (c: { playerIndex: number; x: number; z: number }) =>
+      `${c.playerIndex}@${c.x.toFixed(4)},${c.z.toFixed(4)}`
+    const a = layoutGrid(players, SPACING, 0, 0, EXTENT).map(key).sort()
+    const b = layoutGrid(players, SPACING, period, 0, EXTENT).map(key).sort()
+    expect(a).toEqual(b)
+  })
+
+  it('degrades safely before anything is published', () => {
+    expect(layoutGrid(0, SPACING, 0, 0, EXTENT)).toEqual([])
+    expect(layoutGrid(5, 0, 0, 0, EXTENT)).toEqual([])
+    expect(layoutGrid(5, SPACING, 0, 0, { across: 0, near: 0, far: 0 })).toEqual([])
+  })
+})
+
+describe('screenDeltaToWorld', () => {
+  /** Where a floor-plane displacement lands on screen, in pixels. */
+  function project(x: number, z: number, unitsPerPixel: number) {
+    return {
+      right: (x - z) / Math.SQRT2 / unitsPerPixel,
+      down: (x + z) / Math.SQRT2 / SCREEN_UP_ON_FLOOR / unitsPerPixel
+    }
+  }
+
+  it('moves the board by exactly the distance the pointer moved', () => {
+    const unitsPerPixel = 0.0675
+    for (const [dx, dy] of [
+      [40, 0],
+      [0, 40],
+      [-25, 60],
+      [13, -7]
+    ]) {
+      const world = screenDeltaToWorld(dx, dy, unitsPerPixel)
+      const screen = project(world.x, world.z, unitsPerPixel)
+      expect(screen.right).toBeCloseTo(dx, 6)
+      expect(screen.down).toBeCloseTo(dy, 6)
+    }
+  })
+
+  it('drives both floor axes, so the board is not stuck on the drift line', () => {
+    const across = screenDeltaToWorld(10, 0, 0.1)
+    expect(across.x).toBeCloseTo(-across.z, 6)
+    expect(across.x).not.toBeCloseTo(0, 6)
+
+    const down = screenDeltaToWorld(0, 10, 0.1)
+    expect(down.x).toBeCloseTo(down.z, 6)
+    expect(down.x).toBeGreaterThan(0)
+  })
+
+  it('is linear, so a drag and the same drag in steps agree', () => {
+    const whole = screenDeltaToWorld(30, 18, 0.08)
+    const a = screenDeltaToWorld(12, 5, 0.08)
+    const b = screenDeltaToWorld(18, 13, 0.08)
+    expect(a.x + b.x).toBeCloseTo(whole.x, 6)
+    expect(a.z + b.z).toBeCloseTo(whole.z, 6)
+  })
+})
+
+describe('layoutGrid lattice coordinates', () => {
+  it('names a cell the same way however far the board has scrolled', () => {
+    // A plot the pointer is resting on keeps its identity while the board
+    // drifts under it; only stepping onto the next plot changes it.
+    const unscrolled = layoutGrid(7, SPACING, 0, 0, EXTENT)
+    const scrolled = layoutGrid(7, SPACING, SPACING * 3, SPACING * 2, EXTENT)
+
+    const cell = unscrolled.find((c) => c.gx === 1 && c.gz === -1)
+    const same = scrolled.find((c) => c.gx === 1 && c.gz === -1)
+    expect(cell).toBeDefined()
+    expect(same).toBeDefined()
+    // Same cell, same player, moved on screen by exactly the scroll.
+    expect(same!.playerIndex).toBe(cell!.playerIndex)
+    expect(same!.x).toBeCloseTo(cell!.x - SPACING * 3, 6)
+    expect(same!.z).toBeCloseTo(cell!.z - SPACING * 2, 6)
+  })
+
+  it('gives every visible cell its own name', () => {
+    const cells = layoutGrid(5, SPACING, 12, -30, EXTENT)
+    const keys = new Set(cells.map((c) => `${c.gx}:${c.gz}`))
+    expect(cells.length).toBeGreaterThan(10)
+    expect(keys.size).toBe(cells.length)
+  })
+
+  it('places a cell where its lattice coordinates say it should be', () => {
+    const scrollX = 41
+    const scrollZ = -17
+    for (const cell of layoutGrid(6, SPACING, scrollX, scrollZ, EXTENT)) {
+      expect(cell.x).toBeCloseTo(cell.gx * SPACING - scrollX, 6)
+      expect(cell.z).toBeCloseTo(cell.gz * SPACING - scrollZ, 6)
+    }
+  })
+})
+
+describe('turnForCell', () => {
+  it('gives a cell the same orientation every time it is laid out', () => {
+    // The lattice is rebuilt every frame; a plot that drew a new number each
+    // time would spin on the spot.
+    for (let gx = -5; gx <= 5; gx++) {
+      for (let gz = -5; gz <= 5; gz++) {
+        expect(turnForCell(gx, gz)).toBe(turnForCell(gx, gz))
+      }
+    }
+  })
+
+  it('only ever turns by a quarter, so a plot stays square in its shaft', () => {
+    for (let gx = -40; gx <= 40; gx++) {
+      for (let gz = -40; gz <= 40; gz++) {
+        const turn = turnForCell(gx, gz)
+        expect(Number.isInteger(turn)).toBe(true)
+        expect(turn).toBeGreaterThanOrEqual(0)
+        expect(turn).toBeLessThanOrEqual(3)
+      }
+    }
+  })
+
+  it('spreads the four orientations evenly over the board', () => {
+    const counts = [0, 0, 0, 0]
+    for (let gx = -30; gx < 30; gx++) {
+      for (let gz = -30; gz < 30; gz++) counts[turnForCell(gx, gz)]++
+    }
+    const expected = 3600 / 4
+    for (const count of counts) {
+      expect(count).toBeGreaterThan(expected * 0.8)
+      expect(count).toBeLessThan(expected * 1.2)
+    }
+  })
+
+  it('does not fall into stripes along either axis', () => {
+    // A weak hash tends to repeat down a row or column, which on a repeating
+    // lattice reads as banding — exactly what the turn is there to break up.
+    let differingNeighbours = 0
+    let pairs = 0
+    for (let gx = -20; gx < 20; gx++) {
+      for (let gz = -20; gz < 20; gz++) {
+        const here = turnForCell(gx, gz)
+        if (turnForCell(gx + 1, gz) !== here) differingNeighbours++
+        if (turnForCell(gx, gz + 1) !== here) differingNeighbours++
+        pairs += 2
+      }
+    }
+    // Three orientations in four differ by chance; anything near that is fine.
+    expect(differingNeighbours / pairs).toBeGreaterThan(0.6)
+  })
+
+  it('is carried on the cells the layout produces', () => {
+    for (const cell of layoutGrid(6, SPACING, 0, 0, EXTENT)) {
+      expect(cell.turn).toBe(turnForCell(cell.gx, cell.gz))
+    }
+  })
+})
+
+/**
+ * The scene has to be able to go the other way: given a player, find a cell on
+ * the lattice drawing them, so that picking a leaderboard row can bring a plot
+ * forward even when no copy of it is currently on screen.
+ */
+describe('solving a cell for a player', () => {
+  it('lands on the wanted player from any starting cell', () => {
+    for (const count of [1, 2, 3, 7, 12, 40]) {
+      const stride = pickStride(count)
+      for (let index = 0; index < count; index++) {
+        for (const [here, gz] of [
+          [0, 0],
+          [5, -3],
+          [-17, 11]
+        ]) {
+          // The row is kept and the column solved for, then stepped the short
+          // way round - which is what plotScene's focusPlayer does.
+          const wanted = (((index - gz * stride) % count) + count) % count
+          let step = (((wanted - here) % count) + count) % count
+          if (step * 2 > count) step -= count
+          expect(playerForCell(here + step, gz, count, stride)).toBe(index)
+          expect(Math.abs(step)).toBeLessThanOrEqual(count)
+        }
+      }
+    }
+  })
+})
+
+/**
+ * Plot size is a server setting published on every payload, so the board has to
+ * take it from the plots it is given rather than from any constant of its own -
+ * including when the plots disagree, which they do while a server that changed
+ * the setting still serves the old size for plots nobody has revisited.
+ */
+describe('sizing the lattice to the plots', () => {
+  it('falls back to the assumed width only while nothing has been decoded', () => {
+    expect(widestPlot([])).toBe(ASSUMED_PLOT_WIDTH)
+    expect(widestPlot([{ sizeX: 16, sizeZ: 16 }])).toBe(16)
+  })
+
+  it('takes the widest plot, not the newest, so nothing overlaps its neighbour', () => {
+    const mixed = [
+      { sizeX: 16, sizeZ: 16 },
+      { sizeX: 48, sizeZ: 48 },
+      { sizeX: 32, sizeZ: 32 }
+    ]
+    expect(widestPlot(mixed)).toBe(48)
+    // Order must not matter: a small plot arriving last cannot shrink the board.
+    expect(widestPlot([...mixed].reverse())).toBe(48)
+  })
+
+  it('counts both axes, because a non-square plot is turned by half turns', () => {
+    expect(widestPlot([{ sizeX: 16, sizeZ: 64 }])).toBe(64)
+  })
+
+  it('leaves a gap of floor between neighbouring plots at any size', () => {
+    for (const width of [16, 32, 48, 208]) {
+      expect(boardPitch(width) - width).toBe(PLOT_GAP)
+    }
+  })
+
+  it('places plots without overlap at whatever size they are', () => {
+    for (const width of [16, 32, 48]) {
+      const spacing = boardPitch(width)
+      const cells = layoutGrid(6, spacing, 0, 0, EXTENT)
+      for (const a of cells) {
+        for (const b of cells) {
+          if (a.gx === b.gx && a.gz === b.gz) continue
+          const apart = Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z))
+          expect(apart).toBeGreaterThanOrEqual(width)
+        }
+      }
+    }
+  })
+})
+
+describe('rescaleScroll', () => {
+  it('keeps the board on the same lattice cell when the pitch changes', () => {
+    const before = boardPitch(16)
+    const after = boardPitch(32)
+    // Cell 7 sits at 7 * pitch, whatever the pitch is.
+    expect(rescaleScroll(7 * before, before, after)).toBeCloseTo(7 * after, 10)
+    expect(rescaleScroll(-3.5 * before, before, after)).toBeCloseTo(-3.5 * after, 10)
+  })
+
+  it('is a no-op for an unchanged pitch and safe for a degenerate one', () => {
+    expect(rescaleScroll(123, 18, 18)).toBe(123)
+    expect(rescaleScroll(123, 0, 34)).toBe(123)
+    expect(rescaleScroll(123, 18, 0)).toBe(123)
+  })
+})
+
+describe('pickColumn', () => {
+  const FLOOR = 1
+  /**
+   * A copy standing at (x, z), turned `turns` quarter turns, with one height per
+   * column filled solid up to it and then `overhang` blocks, as [x, y, z].
+   */
+  const plot = (
+    x: number,
+    z: number,
+    sizeX: number,
+    sizeZ: number,
+    heights: number[],
+    turns = 0,
+    overhang: [number, number, number][] = []
+  ) => {
+    const sizeY = 12
+    const solid = new Uint8Array(sizeX * sizeY * sizeZ)
+    heights.forEach((height, i) => {
+      for (let y = 0; y < height; y++) solid[y * sizeX * sizeZ + i] = 1
+    })
+    for (const [bx, by, bz] of overhang) solid[(by * sizeZ + bz) * sizeX + bx] = 1
+    const toWorld = new Matrix4().makeRotationY((turns * Math.PI) / 2).setPosition(x, 0, z)
+    return { toWorld, toLocal: toWorld.clone().invert(), sizeX, sizeY, sizeZ, solid }
+  }
+  const flat = (height: number, count = 16) => new Array<number>(count).fill(height)
+  const ray = (from: [number, number, number], towards: [number, number, number]) =>
+    new Ray(new Vector3(...from), new Vector3(...towards).normalize())
+  // Along +x, dropping a quarter block a block: 2.0 to 3.0 over the plot at the
+  // origin, and down to the floor at x = 6, the middle of the plot beyond it.
+  const across = ray([-10, 5, 1.5], [1, -0.25, 0])
+
+  it('reaches past the low part of a plot to the one the ray comes down on', () => {
+    // A tower three blocks tall in the corner the ray never passes over.
+    const front = flat(1)
+    front[0] = 3
+    expect(pickColumn(across, [plot(0, 0, 4, 4, front), plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(1)
+  })
+
+  it('stops at a column that stands in the way', () => {
+    const front = flat(1)
+    front[3 * 4 + 3] = 3 // row z = 3, which the ray runs along, at x = 1..2
+    expect(pickColumn(across, [plot(0, 0, 4, 4, front), plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(0)
+  })
+
+  it('passes under an overhang to the plot beyond', () => {
+    // Leaves at y = 3 over row z = 3 at x = 1..2, where the ray is at 2.75 to 2.25.
+    const canopy = plot(0, 0, 4, 4, flat(1), 0, [
+      [1, 3, 3],
+      [2, 3, 3]
+    ])
+    expect(pickColumn(across, [canopy, plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(1)
+    // The same leaves one layer lower are in its way.
+    const low = plot(0, 0, 4, 4, flat(1), 0, [[1, 2, 3]])
+    expect(pickColumn(across, [low, plot(6, 0, 4, 4, flat(1))], FLOOR)).toBe(0)
+  })
+
+  it('does not reach a plot through the floor beside it', () => {
+    // Dug below a floor at 10; crosses the floor at x = -1, short of the plot at 0..4.
+    const dug = plot(2, 0, 4, 4, flat(9))
+    expect(pickColumn(ray([-3, 14, 0], [1, -2, 0]), [dug], 10)).toBeNull()
+  })
+
+  it('reaches a plot dug below the floor down its own shaft', () => {
+    const dug = plot(2, 0, 4, 4, flat(9))
+    expect(pickColumn(ray([2, 20, 0], [0, -1, 0]), [dug], 10)).toBe(0)
+  })
+
+  it('finds a column where the quarter turn has put it', () => {
+    // 4 x 2, one tall column at local (3, 0), which a quarter turn puts at (-0.5, -1.5).
+    const heights = [0, 0, 0, 5, 0, 0, 0, 0]
+    const turned = plot(0, 0, 4, 2, heights, 1)
+    expect(pickColumn(ray([-0.5, 20, -1.5], [0, -1, 0]), [turned], FLOOR)).toBe(0)
+    // Where it would be unturned is outside the turned footprint altogether.
+    expect(pickColumn(ray([1.5, 20, -0.5], [0, -1, 0]), [turned], FLOOR)).toBeNull()
+  })
+
+  it('skips copies that are not drawn and keeps the others where they are', () => {
+    const drawn = plot(0, 0, 4, 4, flat(2))
+    expect(pickColumn(ray([0, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBe(1)
+    expect(pickColumn(ray([20, 20, 0], [0, -1, 0]), [null, drawn], FLOOR)).toBeNull()
+  })
+})
+
+describe('focus framing around the controls', () => {
+  const W = 1280
+  const H = 720
+  const NONE = { x: 0, y: 0 }
+  // The skin column is the wider of the two, and a centred plot keeps its
+  // width clear on both sides.
+  const SIDES = { x: 16 + 192, y: 0 }
+
+  it('matches the old whole-canvas fit when nothing is reserved', () => {
+    const across = 45
+    const tall = 48
+    const old = Math.max(tall / 2, across / (2 * (W / H))) * 1.24
+    const gutter = focusGutter(W, H, 1.24)
+    expect((focusUnitsPerPixel(across, tall, W, H, NONE, gutter) * H) / 2).toBeCloseTo(old)
+  })
+
+  it('keeps one gutter above and below a plot fitted to the height', () => {
+    const gutter = focusGutter(W, H, 1.24)
+    const perPixel = focusUnitsPerPixel(45, 48, W, H, SIDES, gutter)
+    expect(48 / perPixel + 2 * gutter).toBeCloseTo(H)
+  })
+
+  it('fits a wide plot between the reserves, one gutter clear of each', () => {
+    const gutter = focusGutter(W, H, 1.24)
+    const perPixel = focusUnitsPerPixel(300, 48, W, H, SIDES, gutter)
+    expect(300 / perPixel).toBeCloseTo(W - 2 * (SIDES.x + gutter))
+  })
+
+  it('stands a control one gutter from the plot, on either side', () => {
+    const plot = 490
+    const gutter = 70
+    const left = besidePlot(W, plot, gutter, 192, 16, true)
+    const right = besidePlot(W, plot, gutter, 60, 16, false)
+    // The plot is centred on the screen, whatever stands beside it.
+    const plotLeft = W / 2 - plot / 2
+    const plotRight = W / 2 + plot / 2
+    expect(plotLeft - (left + 192)).toBeCloseTo(gutter)
+    expect(right - plotRight).toBeCloseTo(gutter)
+  })
+
+  it('stops a control at the edge when the plot leaves it no room', () => {
+    // Drawn bigger than the room, as the board's framing can: the control
+    // keeps to the screen rather than hugging the plot off the end of it.
+    expect(besidePlot(W, 1100, 70, 192, 16, true)).toBe(16)
+    expect(besidePlot(W, 1100, 70, 60, 16, false)).toBe(W - 16 - 60)
+    // Above the plot, the edge to keep clear of is the leaderboard's bar.
+    expect(besidePlot(844, 494, 38, 40, 80, true)).toBe(97)
+    expect(besidePlot(844, 700, 38, 40, 80, true)).toBe(80)
+  })
+})

@@ -33,15 +33,10 @@ onErrorCaptured((err) => {
 </script>
 
 <template>
-  <div>
-    <slot v-if="!error"></slot>
-    <div
-      class="flex flex-col gap-2 bg-red-500 text-white font-semibold p-6 min-w-72 rounded"
-      v-else
-    >
-      <h1>An error occurred:</h1>
-      <p>{{ error.message }}</p>
-      <Button text @click="resetError">Try Again</Button>
-    </div>
+  <slot v-if="!error"></slot>
+  <div v-else class="flex flex-col gap-2 bg-red-500 text-white font-semibold p-6 min-w-72 rounded">
+    <h1>An error occurred:</h1>
+    <p>{{ error.message }}</p>
+    <Button text @click="resetError">Try Again</Button>
   </div>
 </template>

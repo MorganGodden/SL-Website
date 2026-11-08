@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  The link-preview card, at the 1200x630 every scraper expects.
+
+  Generic on purpose: no season, no player, no score, so one image serves every
+  link the site hands out - including the /s1?plot=Name permalinks, which a
+  scraper reads this for without ever seeing the plot they name.
+
+  Committed as public/og.png so nothing at build or request time needs a
+  browser. Re-render when the logo or the wording changes:
+
+    google-chrome --headless --hide-scrollbars --window-size=1200,630 \
+      --screenshot=public/og.png scripts/og-card.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap" rel="stylesheet" />
+<style>
+  /* The site's own sky, deepened so the white wordmark carries across it. */
+  body {
+    margin: 0;
+    width: 1200px;
+    height: 630px;
+    background: linear-gradient(#3f7ec4, #a8cdf2);
+    font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+  }
+  img {
+    width: 560px;
+    filter: drop-shadow(0 8px 24px rgba(12, 32, 60, 0.35));
+  }
+  p {
+    margin: 0;
+    font-size: 27px;
+    font-weight: 600;
+    color: #fff;
+    text-shadow: 0 2px 10px rgba(12, 32, 60, 0.45);
+  }
+</style>
+</head>
+<body>
+  <img src="../src/assets/images/logo.avif" alt="" />
+  <p>Build. Compete. Climb the board.</p>
+</body>
+</html>
