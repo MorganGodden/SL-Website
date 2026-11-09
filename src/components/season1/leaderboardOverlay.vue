@@ -260,6 +260,18 @@ function progress(entry: LeaderboardEntry): string {
             </ul>
           </div>
 
+          <!--
+            Under the list, as on the gate's card. Not on the island: at phone
+            width it has no room left beside the title, seasons and status.
+          -->
+          <div class="border-t border-white/50 px-3 py-2">
+            <RouterLink
+              to="/s1/modpack"
+              class="text-xs font-semibold text-primary-700 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600"
+            >
+              Optional modpack →
+            </RouterLink>
+          </div>
         </div>
       </Transition>
     </section>

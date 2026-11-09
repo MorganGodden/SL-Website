@@ -38,6 +38,11 @@ growth stage, takes the grown one's cap. An item that is a block in the hand
 takes its icon from `blocks.png` instead. The mace has none: the pack does not
 retexture it.
 
+`gate-grass.png`, the Season 1 gate's background, is baked from `blocks.png`
+by `npm run build:gate-grass`: the grass block's top, recoloured, with pink
+petals, leaf litter and wildflowers scattered over it. Bake it again after
+rebuilding the atlas.
+
 No other part of the pack is redistributed here, and the pack itself is not
 checked in.
 

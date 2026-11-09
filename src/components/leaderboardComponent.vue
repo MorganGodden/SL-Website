@@ -34,7 +34,7 @@ const tableData = computed(() =>
 </script>
 
 <template>
-  <div class="min-h-[300px] rounded-lg overflow-hidden drop-shadow">
+  <div class="board min-h-[300px]">
     <DataTable
       :value="tableData"
       paginator
@@ -107,3 +107,18 @@ const tableData = computed(() =>
     </DataTable>
   </div>
 </template>
+
+<style scoped>
+/*
+ * The table draws no surface of its own, so it takes the one it is put on:
+ * Season 0's grounded glass. PrimeVue's theme paints its header, header cells,
+ * rows and paginator white; those are cleared here and its dividers kept.
+ */
+.board :deep(.p-datatable-header),
+.board :deep(.p-datatable-header-cell),
+.board :deep(.p-datatable-tbody > tr),
+.board :deep(.p-datatable-footer),
+.board :deep(.p-paginator) {
+  background: transparent;
+}
+</style>

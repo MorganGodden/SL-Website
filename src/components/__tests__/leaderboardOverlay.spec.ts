@@ -17,7 +17,8 @@ async function mountOverlay(props: Record<string, unknown>) {
     history: createMemoryHistory(),
     routes: [
       { path: '/s0', component: { render: () => h('div') } },
-      { path: '/s1', component: { render: () => h('div') } }
+      { path: '/s1', component: { render: () => h('div') } },
+      { path: '/s1/modpack', component: { render: () => h('div') } }
     ]
   })
   // The panel carries the season nav, so it wants somewhere to already be.
@@ -46,5 +47,13 @@ describe('leaderboard overlay', () => {
 
     expect(wrapper.findAll('.skeleton')).toHaveLength(0)
     expect(wrapper.findAll('#leaderboard-panel li')).toHaveLength(ROWS.length)
+  })
+
+  it('links to the modpack under the list', async () => {
+    const wrapper = await mountOverlay({ rows: ROWS })
+
+    expect(wrapper.get('#leaderboard-panel a[href="/s1/modpack"]').text()).toBe(
+      'Optional modpack →'
+    )
   })
 })
