@@ -100,3 +100,43 @@ a,
     backdrop-filter: none;
   }
 }
+
+/*
+ * Grass: the ground Season 1's gate and the Season 0 archive stand on. A patch
+ * baked by `npm run build:gate-grass` from the board's own textures: 32 blocks
+ * of 16px, shown at 40px a block (2.5x) with the pixels kept square.
+ */
+.grass {
+  background: url('./textures/gate-grass.png') 0 0 / 1280px 1280px repeat;
+  image-rendering: pixelated;
+}
+
+/*
+ * Grounded glass: glass made to sit on the grass rather than hover over it.
+ * Lit from the top left and shaded to the bottom right in the grass's own
+ * greens (#5e9c3e mixed with white, and halved), a tight shadow where it meets
+ * the ground, and the grass darkened softly all round. More opaque than plain
+ * glass, since grass is busier behind it than the board. Tuned in the Gate
+ * Grass Tuner artifact. After .glass, so it wins at the same specificity.
+ */
+.glass--grounded {
+  box-shadow:
+    -5px -5px 10px rgba(191, 215, 178, 0.3),
+    5px 5px 10px rgba(47, 78, 31, 0.3),
+    0 1px 2px rgba(47, 78, 31, 0.4),
+    0 14px 16px -12px rgba(47, 78, 31, 0.52),
+    0 0 80px 28px rgba(47, 78, 31, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .glass--grounded {
+    background: rgba(255, 255, 255, 0.75);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass--grounded {
+    background: rgba(255, 255, 255, 0.94);
+  }
+}

@@ -98,8 +98,11 @@ async function copyServer(): Promise<void> {
 
 <template>
   <SeasonOneView v-if="state === 'open'" />
-  <div v-else class="flex h-full w-full items-center justify-center bg-slate-200 px-4 py-6">
-    <section aria-labelledby="gate-title" class="glass w-full max-w-sm rounded-2xl px-5 py-4">
+  <div v-else class="grass flex h-full w-full items-center justify-center px-4 py-6">
+    <section
+      aria-labelledby="gate-title"
+      class="glass glass--grounded w-full max-w-sm rounded-2xl px-5 py-4"
+    >
       <h1 id="gate-title" class="text-sm font-bold text-slate-900">Snow Leagues 1</h1>
 
       <div v-if="state === 'pre-season'" class="mt-4">
@@ -149,12 +152,20 @@ async function copyServer(): Promise<void> {
         </button>
       </div>
 
-      <RouterLink
-        to="/s0"
-        class="mt-5 inline-block text-xs font-semibold text-primary-700 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600"
-      >
-        SL-0 archive →
-      </RouterLink>
+      <div class="mt-5 flex items-center justify-between gap-3">
+        <RouterLink
+          to="/s1/modpack"
+          class="text-xs font-semibold text-primary-700 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600"
+        >
+          Optional modpack →
+        </RouterLink>
+        <RouterLink
+          to="/s0"
+          class="text-xs font-semibold text-primary-700 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600"
+        >
+          SL-0 archive →
+        </RouterLink>
+      </div>
     </section>
   </div>
 </template>

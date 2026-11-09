@@ -25,6 +25,7 @@ describe('season 1 countdown card', () => {
     expect(text).toMatch(/Last day \D*19\D/)
     expect(text).toContain('mc.example.org')
     expect(wrapper.find('button').text()).toBe('Copy')
+    expect(wrapper.find('router-link-stub[to="/s1/modpack"]').exists()).toBe(true)
     wrapper.unmount()
   })
 

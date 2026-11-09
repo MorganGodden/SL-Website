@@ -34,6 +34,8 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: defaultSeason().route },
     ...seasonRoutes,
+    // The optional client modpack: an ordinary page, linked from the gate's card.
+    { path: '/s1/modpack', component: () => import('@/views/SeasonOneModpackView.vue') },
     // Anything else (including a stale /s2 link) lands on the current season
     // rather than a blank screen.
     { path: '/:pathMatch(.*)*', redirect: defaultSeason().route }
